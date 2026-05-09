@@ -29,6 +29,14 @@ const LOG_DIR           = process.env.LOG_DIR            ?? "./logs";
 const MAX_RETRIES       = parseInt(process.env.MAX_RETRIES       ?? "3");
 const STUCK_TIMEOUT_MIN = parseInt(process.env.STUCK_TIMEOUT_MIN ?? "10");
 
+// Mapa: nombre de formulario Windows → bandeja configurada en el .env
+// Si el valor está vacío se omite el parámetro y el driver decide automáticamente.
+const PAPER_TRAY_MAP = {
+  "Letter":    process.env.TRAY_CARTA   ?? "",
+  "Oficio II": process.env.TRAY_OFICIO2 ?? "",
+  "Legal":     process.env.TRAY_LEGAL   ?? "",
+};
+
 // Ruta al ejecutable de LibreOffice (se busca en el PATH y luego en rutas habituales de Windows)
 const LIBREOFFICE_PATHS = [
   "soffice",
@@ -308,15 +316,19 @@ async function processJob(job, attempt) {
       }
     }
 
-    // Detectar tamaño de papel y enviar a impresora
+    // Detectar tamaño de papel y bandeja, luego enviar a impresora
     const paperSizeName = await getPaperSizeName(fileToPrint);
-    await log("info", `  Tamaño de papel: ${paperSizeName ?? "predeterminado de la impresora"}`);
+    const trayName      = paperSizeName ? (PAPER_TRAY_MAP[paperSizeName] ?? "") : "";
+
+    await log("info", `  Tamaño de papel : ${paperSizeName ?? "predeterminado"}`);
+    await log("info", `  Bandeja         : ${trayName || "automática (driver)"}`);
 
     const printOptions = {
-      printer:   printer.system_name,
-      copies:    job.copy_count,
-      silent:    true,
+      printer: printer.system_name,
+      copies:  job.copy_count,
+      silent:  true,
       ...(paperSizeName && { paperSize: paperSizeName }),
+      ...(trayName       && { bin:       trayName       }),
     };
 
     await print(fileToPrint, printOptions);
