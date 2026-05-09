@@ -1,0 +1,22 @@
+{
+  "name": "print-qr-agent",
+  "version": "2.0.0",
+  "description": "Agente local de impresión para Print QR System",
+  "type": "module",
+  "main": "agent.js",
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "start": "node agent.js",
+    "dev": "node --watch agent.js",
+    "pm2:start": "pm2 start ecosystem.config.cjs",
+    "pm2:stop": "pm2 stop print-agent",
+    "pm2:logs": "pm2 logs print-agent"
+  },
+  "dependencies": {
+    "@supabase/supabase-js": "^2.48.1",
+    "dotenv": "^16.4.7",
+    "pdf-to-printer": "^5.1.2"
+  }
+}
