@@ -1,21 +1,23 @@
 /**
- * Print QR System — Agente Local de Impresión v2.0
+ * Print QR System — Agente Local de Impresión v2.1
  *
- * Fase 5 — Producción:
- *  - Claiming atómico via RPC (FOR UPDATE SKIP LOCKED)
- *  - Recuperación de trabajos atascados al arrancar
- *  - Reintentos con backoff exponencial (2 s, 4 s, 8 s)
- *  - Apagado graceful (SIGTERM / SIGINT)
- *  - Logging a consola + archivo diario en ./logs/
+ * Soporta PDF, Word (.doc/.docx) y PowerPoint (.ppt/.pptx).
+ * Para DOCX/PPTX se usa LibreOffice para convertir a PDF antes de imprimir.
+ * Para PPTX con múltiples diapositivas por hoja se usa pdf-lib para el layout.
  */
 
 import "dotenv/config";
 import { createClient } from "@supabase/supabase-js";
 import pdfToPrinter from "pdf-to-printer";
 const { print, getPrinters } = pdfToPrinter;
-import { writeFile, mkdir, unlink, appendFile } from "node:fs/promises";
+import { writeFile, mkdir, unlink, readFile, appendFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
-import { join } from "node:path";
+import { join, extname, basename } from "node:path";
+import { exec } from "node:child_process";
+import { promisify } from "node:util";
+import { PDFDocument } from "pdf-lib";
+
+const execAsync = promisify(exec);
 
 // ── Configuración ────────────────────────────────────────────
 
@@ -26,6 +28,14 @@ const TEMP_DIR          = process.env.TEMP_DIR           ?? "./tmp";
 const LOG_DIR           = process.env.LOG_DIR            ?? "./logs";
 const MAX_RETRIES       = parseInt(process.env.MAX_RETRIES       ?? "3");
 const STUCK_TIMEOUT_MIN = parseInt(process.env.STUCK_TIMEOUT_MIN ?? "10");
+
+// Ruta al ejecutable de LibreOffice (se busca en el PATH y luego en rutas habituales de Windows)
+const LIBREOFFICE_PATHS = [
+  "soffice",
+  "libreoffice",
+  "C:\\Program Files\\LibreOffice\\program\\soffice.exe",
+  "C:\\Program Files (x86)\\LibreOffice\\program\\soffice.exe",
+];
 
 if (!SUPABASE_URL || !SERVICE_KEY) {
   console.error("❌ Faltan SUPABASE_URL o SUPABASE_SERVICE_ROLE_KEY en .env");
@@ -80,15 +90,95 @@ async function dbLogEvent(jobId, eventType, description, newStatus = null, metad
   });
 }
 
+// ── Conversión con LibreOffice ───────────────────────────────
+
+async function findLibreOffice() {
+  for (const candidate of LIBREOFFICE_PATHS) {
+    try {
+      await execAsync(`"${candidate}" --version`);
+      return candidate;
+    } catch { /* no encontrado */ }
+  }
+  return null;
+}
+
+async function convertToPdfWithLibreOffice(inputPath) {
+  const loPath = await findLibreOffice();
+  if (!loPath) {
+    throw new Error(
+      "LibreOffice no encontrado. Instálalo desde https://www.libreoffice.org/ " +
+      "para imprimir archivos Word y PowerPoint."
+    );
+  }
+
+  const outDir = TEMP_DIR;
+  await execAsync(`"${loPath}" --headless --convert-to pdf --outdir "${outDir}" "${inputPath}"`);
+
+  const base    = basename(inputPath, extname(inputPath));
+  const pdfPath = join(outDir, `${base}.pdf`);
+
+  if (!existsSync(pdfPath)) {
+    throw new Error(`LibreOffice no generó el PDF esperado en: ${pdfPath}`);
+  }
+  return pdfPath;
+}
+
+// ── Layout de diapositivas por hoja ──────────────────────────
+
+const SLIDE_LAYOUT = {
+  1: { cols: 1, rows: 1 },
+  2: { cols: 1, rows: 2 },
+  3: { cols: 1, rows: 3 },
+  4: { cols: 2, rows: 2 },
+  6: { cols: 2, rows: 3 },
+  9: { cols: 3, rows: 3 },
+};
+
+async function arrangeSlidesPerPage(pdfPath, slidesPerPage) {
+  if (!slidesPerPage || slidesPerPage <= 1) return pdfPath;
+
+  const layout = SLIDE_LAYOUT[slidesPerPage] ?? { cols: 2, rows: 2 };
+  const { cols, rows } = layout;
+
+  const PAGE_W = 612;   // Oficio 2: 8.5" × 72
+  const PAGE_H = 936;   // Oficio 2: 13" × 72
+  const MARGIN = 20;
+  const GAP    = 8;
+  const cellW  = (PAGE_W - MARGIN * 2 - GAP * (cols - 1)) / cols;
+  const cellH  = (PAGE_H - MARGIN * 2 - GAP * (rows - 1)) / rows;
+
+  const srcBytes  = await readFile(pdfPath);
+  const srcDoc    = await PDFDocument.load(srcBytes);
+  const totalSlides = srcDoc.getPageCount();
+  const newDoc    = await PDFDocument.create();
+
+  for (let start = 0; start < totalSlides; start += slidesPerPage) {
+    const page    = newDoc.addPage([PAGE_W, PAGE_H]);
+    const batchN  = Math.min(slidesPerPage, totalSlides - start);
+
+    for (let i = 0; i < batchN; i++) {
+      const [embedded] = await newDoc.embedPdf(srcDoc, [start + i]);
+      const col = i % cols;
+      const row = Math.floor(i / cols);
+      const x   = MARGIN + col * (cellW + GAP);
+      const y   = PAGE_H - MARGIN - (row + 1) * cellH - row * GAP;
+
+      page.drawPage(embedded, { x, y, width: cellW, height: cellH });
+    }
+  }
+
+  const outPath = pdfPath.replace(".pdf", "_handout.pdf");
+  await writeFile(outPath, await newDoc.save());
+  return outPath;
+}
+
 // ── Claiming atómico ─────────────────────────────────────────
 
 async function claimNextJob() {
-  // Intenta usar el RPC con FOR UPDATE SKIP LOCKED (ver sql/004_agent.sql)
   const { data, error } = await supabase.rpc("claim_next_print_job");
 
   if (!error) return data?.[0] ?? null;
 
-  // Fallback si la función SQL no existe aún
   await log("warn", "RPC claim_next_print_job no disponible — usando fallback simple");
   const { data: jobs } = await supabase
     .from("print_jobs")
@@ -132,7 +222,9 @@ async function recoverStuckJobs() {
 // ── Procesar un trabajo ──────────────────────────────────────
 
 async function processJob(job, attempt) {
-  const tempFile = join(TEMP_DIR, `${job.id}.pdf`);
+  const ext          = extname(job.file_path).toLowerCase() || ".pdf";
+  const tempOriginal = join(TEMP_DIR, `${job.id}${ext}`);
+  const extraFiles   = [];   // archivos temporales adicionales a limpiar
 
   try {
     // Determinar impresora según tipo de impresión
@@ -143,7 +235,6 @@ async function processJob(job, attempt) {
 
     if (printerErr) throw new Error(`Error al leer impresoras de Supabase: ${printerErr.message}`);
 
-    // Log de diagnóstico
     if (!printers?.length) {
       throw new Error(
         "No hay impresoras activas en la base de datos. " +
@@ -167,16 +258,36 @@ async function processJob(job, attempt) {
 
     await log("info", `  Impresora: ${printer.name} (${printer.system_name})`);
 
-    // Descargar PDF desde Supabase Storage
+    // Descargar archivo desde Supabase Storage
     const { data: blob, error: dlErr } = await supabase.storage
       .from("print-files")
       .download(job.file_path);
 
     if (dlErr || !blob) throw new Error(`Descarga fallida: ${dlErr?.message}`);
-    await writeFile(tempFile, Buffer.from(await blob.arrayBuffer()));
+    await writeFile(tempOriginal, Buffer.from(await blob.arrayBuffer()));
+
+    // Determinar el archivo a imprimir (conversión si es necesario)
+    let fileToPrint = tempOriginal;
+
+    const needsConversion = [".docx", ".doc", ".pptx", ".ppt"].includes(ext);
+    if (needsConversion) {
+      await log("info", `  Convirtiendo ${ext.toUpperCase()} → PDF con LibreOffice…`);
+      const convertedPdf = await convertToPdfWithLibreOffice(tempOriginal);
+      extraFiles.push(convertedPdf);
+      fileToPrint = convertedPdf;
+
+      // Para PowerPoint, aplicar layout de diapositivas por hoja
+      const slidesPerPage = job.images_per_page ?? 1;
+      if ((ext === ".pptx" || ext === ".ppt") && slidesPerPage > 1) {
+        await log("info", `  Aplicando layout: ${slidesPerPage} diapositivas por hoja…`);
+        const handoutPdf = await arrangeSlidesPerPage(convertedPdf, slidesPerPage);
+        if (handoutPdf !== convertedPdf) extraFiles.push(handoutPdf);
+        fileToPrint = handoutPdf;
+      }
+    }
 
     // Enviar a impresora
-    await print(tempFile, {
+    await print(fileToPrint, {
       printer: printer.system_name,
       copies:  job.copy_count,
       silent:  true,
@@ -198,7 +309,8 @@ async function processJob(job, attempt) {
     await log("success", `${job.correlative} → impreso en ${printer.name}`);
 
   } finally {
-    await unlink(tempFile).catch(() => {});
+    await unlink(tempOriginal).catch(() => {});
+    for (const f of extraFiles) await unlink(f).catch(() => {});
   }
 }
 
@@ -210,18 +322,17 @@ async function processWithRetry(job) {
   for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
     try {
       await processJob(job, attempt);
-      return; // éxito
+      return;
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       await log("error", `Intento ${attempt}/${MAX_RETRIES} fallido: ${msg}`);
 
       if (attempt < MAX_RETRIES) {
-        const delay = Math.pow(2, attempt) * 2000; // 4 s, 8 s
+        const delay = Math.pow(2, attempt) * 2000;
         await dbLogEvent(job.id, "error", `Error intento ${attempt}: ${msg}`, null, { attempt, error: msg });
         await log("info", `Reintentando en ${delay / 1000} s…`);
         await sleep(delay);
       } else {
-        // Reintentos agotados
         await dbUpdateJob(job.id, { status: "failed" }).catch(() => {});
         await dbLogEvent(
           job.id,
@@ -235,7 +346,7 @@ async function processWithRetry(job) {
           table_name: "print_jobs",
           record_id:  job.id,
           new_values: { error: msg, correlative: job.correlative, attempts: MAX_RETRIES },
-        }).then(() => {}, () => {});  // .catch() no existe en PostgrestBuilder
+        }).then(() => {}, () => {});
         await log("error", `${job.correlative} marcado como FALLIDO`);
       }
     }
@@ -291,13 +402,12 @@ function setupGracefulShutdown() {
 async function main() {
   const sep = "═".repeat(52);
   await log("info", sep);
-  await log("info", "Print QR System — Agente de Impresión v2.0");
+  await log("info", "Print QR System — Agente de Impresión v2.1");
   await log("info", `Supabase : ${SUPABASE_URL}`);
   await log("info", `Polling  : cada ${POLL_INTERVAL_MS / 1000} s`);
   await log("info", `Reintentos: ${MAX_RETRIES}  |  Stuck timeout: ${STUCK_TIMEOUT_MIN} min`);
   await log("info", sep);
 
-  // Verificar conexión con Supabase
   const { error: pingErr } = await supabase.from("settings").select("key").limit(1);
   if (pingErr) {
     await log("error", "No se pudo conectar con Supabase", { message: pingErr.message });
@@ -305,7 +415,14 @@ async function main() {
   }
   await log("success", "Conexión con Supabase OK");
 
-  // Listar impresoras del sistema
+  // Verificar LibreOffice
+  const loPath = await findLibreOffice();
+  if (loPath) {
+    await log("success", `LibreOffice encontrado: ${loPath}`);
+  } else {
+    await log("warn", "LibreOffice NO encontrado — los archivos Word/PowerPoint no podrán imprimirse");
+  }
+
   try {
     const sysPrinters = await getPrinters();
     const names = sysPrinters.map((p) => p.deviceId).join(", ") || "ninguna detectada";
@@ -314,12 +431,9 @@ async function main() {
     await log("warn", "No se pudo obtener la lista de impresoras del sistema");
   }
 
-  // Recuperar trabajos que quedaron atascados en ejecuciones previas
   await recoverStuckJobs();
-
   setupGracefulShutdown();
   await log("info", "Iniciando ciclo de polling…");
-
   await poll();
 }
 

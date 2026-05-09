@@ -15,7 +15,7 @@ import { Input } from "@/components/ui/input";
 import { Card } from "@/components/ui/card";
 import { cn, formatCurrency } from "@/lib/utils";
 
-// ── Layout options ─────────────────────────────────────────
+// ── Layout de imágenes ─────────────────────────────────────────
 
 const LAYOUT_OPTIONS = [
   { value: 1,  cols: 1, rows: 1 },
@@ -28,29 +28,60 @@ const LAYOUT_OPTIONS = [
 
 type LayoutValue = (typeof LAYOUT_OPTIONS)[number]["value"];
 
-// ── Tamaños de papel ───────────────────────────────────────
+// ── Tamaño de papel fijo: Oficio 2 ────────────────────────────
+const PAPER_W     = 612;        // 8.5" × 72 pts
+const PAPER_H     = 936;        // 13" × 72 pts
+const PAPER_LABEL = "Oficio 2";
+const PAPER_DESC  = "8.5 × 13 in";
 
-type PaperSize = "carta" | "oficio";
-type PrintRange = "all" | "single" | "range";
+// ── Diapositivas por hoja (solo PowerPoint) ───────────────────
 
-const PAPER: Record<PaperSize, { w: number; h: number; label: string; desc: string }> = {
-  carta:  { w: 612, h: 792,  label: "Carta",  desc: "8.5 × 11 in" },
-  oficio: { w: 612, h: 1008, label: "Oficio", desc: "8.5 × 14 in" },
+const SLIDES_PER_PAGE_OPTIONS = [1, 2, 3, 4, 6, 9] as const;
+type SlidesPerPage = (typeof SLIDES_PER_PAGE_OPTIONS)[number];
+
+const SLIDE_LAYOUT: Record<SlidesPerPage, { cols: number; rows: number }> = {
+  1: { cols: 1, rows: 1 },
+  2: { cols: 1, rows: 2 },
+  3: { cols: 1, rows: 3 },
+  4: { cols: 2, rows: 2 },
+  6: { cols: 2, rows: 3 },
+  9: { cols: 3, rows: 3 },
 };
 
-// ── Helpers ────────────────────────────────────────────────
+type PrintRange = "all" | "single" | "range";
+
+// ── Detectores de tipo de archivo ─────────────────────────────
 
 function isPdfFile(file: File) {
   return file.type === "application/pdf" || file.name.toLowerCase().endsWith(".pdf");
 }
 
-function detectPaperSize(widthPts: number, heightPts: number): PaperSize | "otro" {
-  const w = Math.min(widthPts, heightPts);
-  const h = Math.max(widthPts, heightPts);
-  if (Math.abs(w - 612) <= 12 && Math.abs(h - 792) <= 12) return "carta";
-  if (Math.abs(w - 612) <= 12 && Math.abs(h - 1008) <= 12) return "oficio";
-  return "otro";
+function isWordFile(file: File) {
+  const name = file.name.toLowerCase();
+  return (
+    file.type === "application/vnd.openxmlformats-officedocument.wordprocessingml.document" ||
+    file.type === "application/msword" ||
+    name.endsWith(".docx") ||
+    name.endsWith(".doc")
+  );
 }
+
+function isPptxFile(file: File) {
+  const name = file.name.toLowerCase();
+  return (
+    file.type === "application/vnd.openxmlformats-officedocument.presentationml.presentation" ||
+    file.type === "application/vnd.ms-powerpoint" ||
+    name.endsWith(".pptx") ||
+    name.endsWith(".ppt")
+  );
+}
+
+function isImageFile(file: File) {
+  return ["image/jpeg", "image/jpg", "image/png", "image/webp"].includes(file.type) ||
+    /\.(jpe?g|png|webp)$/i.test(file.name);
+}
+
+// ── Helpers de imagen ─────────────────────────────────────────
 
 async function generateImageThumbnail(file: File, maxWidth = 400): Promise<Blob> {
   return new Promise((resolve, reject) => {
@@ -60,7 +91,7 @@ async function generateImageThumbnail(file: File, maxWidth = 400): Promise<Blob>
       URL.revokeObjectURL(url);
       const scale = Math.min(1, maxWidth / img.width);
       const canvas = document.createElement("canvas");
-      canvas.width = Math.round(img.width * scale);
+      canvas.width  = Math.round(img.width  * scale);
       canvas.height = Math.round(img.height * scale);
       const ctx = canvas.getContext("2d");
       if (!ctx) return reject(new Error("Canvas no soportado"));
@@ -76,37 +107,6 @@ async function generateImageThumbnail(file: File, maxWidth = 400): Promise<Blob>
   });
 }
 
-async function generatePdfThumbnail(file: File, maxWidth = 400): Promise<Blob> {
-  const pdfjsLib = await import("pdfjs-dist");
-  pdfjsLib.GlobalWorkerOptions.workerSrc =
-    `https://unpkg.com/pdfjs-dist@${pdfjsLib.version}/build/pdf.worker.min.mjs`;
-
-  const arrayBuffer = await file.arrayBuffer();
-  const pdf = await pdfjsLib.getDocument({ data: new Uint8Array(arrayBuffer) }).promise;
-  const page = await pdf.getPage(1);
-
-  const baseViewport = page.getViewport({ scale: 1 });
-  const scale = maxWidth / baseViewport.width;
-  const viewport = page.getViewport({ scale });
-
-  const canvas = document.createElement("canvas");
-  canvas.width = Math.round(viewport.width);
-  canvas.height = Math.round(viewport.height);
-  const ctx = canvas.getContext("2d")!;
-  ctx.fillStyle = "#ffffff";
-  ctx.fillRect(0, 0, canvas.width, canvas.height);
-
-  await page.render({ canvas, viewport }).promise;
-
-  return new Promise<Blob>((resolve, reject) => {
-    canvas.toBlob(
-      (blob) => (blob ? resolve(blob) : reject(new Error("Error al generar miniatura del PDF"))),
-      "image/jpeg",
-      0.85
-    );
-  });
-}
-
 async function imageFileToJpegBytes(file: File, maxPx = 1600): Promise<ArrayBuffer> {
   return new Promise((resolve, reject) => {
     const img = new window.Image();
@@ -115,7 +115,7 @@ async function imageFileToJpegBytes(file: File, maxPx = 1600): Promise<ArrayBuff
       URL.revokeObjectURL(url);
       const scale = Math.min(1, maxPx / Math.max(img.width, img.height));
       const canvas = document.createElement("canvas");
-      canvas.width = Math.round(img.width * scale);
+      canvas.width  = Math.round(img.width  * scale);
       canvas.height = Math.round(img.height * scale);
       const ctx = canvas.getContext("2d");
       if (!ctx) return reject(new Error("Canvas no soportado"));
@@ -137,32 +137,30 @@ async function imageArrayToPdf(files: File[], imagesPerPage: LayoutValue): Promi
   const { PDFDocument } = await import("pdf-lib");
   const pdfDoc = await PDFDocument.create();
 
-  const PAGE_W = 612, PAGE_H = 792, MARGIN = 20, GAP = 8;
+  const MARGIN = 20, GAP = 8;
   const { cols, rows } = layout;
-  const cellW = (PAGE_W - MARGIN * 2 - GAP * (cols - 1)) / cols;
-  const cellH = (PAGE_H - MARGIN * 2 - GAP * (rows - 1)) / rows;
+  const cellW = (PAPER_W - MARGIN * 2 - GAP * (cols - 1)) / cols;
+  const cellH = (PAPER_H - MARGIN * 2 - GAP * (rows - 1)) / rows;
 
   const cellPxW = Math.round(cellW * (150 / 72));
   const cellPxH = Math.round(cellH * (150 / 72));
-  const maxPx = Math.max(cellPxW, cellPxH);
+  const maxPx   = Math.max(cellPxW, cellPxH);
 
   for (let pageIdx = 0; pageIdx < Math.ceil(files.length / imagesPerPage); pageIdx++) {
-    const page = pdfDoc.addPage([PAGE_W, PAGE_H]);
+    const page  = pdfDoc.addPage([PAPER_W, PAPER_H]);
     const batch = files.slice(pageIdx * imagesPerPage, (pageIdx + 1) * imagesPerPage);
 
     for (let i = 0; i < batch.length; i++) {
-      const f = batch[i];
-      const col = i % cols;
-      const row = Math.floor(i / cols);
+      const col      = i % cols;
+      const row      = Math.floor(i / cols);
+      const imgBytes = await imageFileToJpegBytes(batch[i], maxPx);
+      const img      = await pdfDoc.embedJpg(imgBytes);
 
-      const imgBytes = await imageFileToJpegBytes(f, maxPx);
-      const img = await pdfDoc.embedJpg(imgBytes);
-
-      const scale = Math.min(cellW / img.width, cellH / img.height);
-      const drawW = img.width * scale;
-      const drawH = img.height * scale;
-      const x = MARGIN + col * (cellW + GAP) + (cellW - drawW) / 2;
-      const y = PAGE_H - MARGIN - (row + 1) * cellH - row * GAP + (cellH - drawH) / 2;
+      const scale  = Math.min(cellW / img.width, cellH / img.height);
+      const drawW  = img.width  * scale;
+      const drawH  = img.height * scale;
+      const x      = MARGIN + col * (cellW + GAP) + (cellW - drawW) / 2;
+      const y      = PAPER_H - MARGIN - (row + 1) * cellH - row * GAP + (cellH - drawH) / 2;
 
       page.drawImage(img, { x, y, width: drawW, height: drawH });
     }
@@ -172,17 +170,14 @@ async function imageArrayToPdf(files: File[], imagesPerPage: LayoutValue): Promi
   return new Blob([new Uint8Array(bytes)], { type: "application/pdf" });
 }
 
-async function generateLayoutPreview(
-  files: File[],
-  imagesPerPage: LayoutValue
-): Promise<string[]> {
+async function generateLayoutPreview(files: File[], imagesPerPage: LayoutValue): Promise<string[]> {
   const layout = LAYOUT_OPTIONS.find((l) => l.value === imagesPerPage) ?? LAYOUT_OPTIONS[0];
   const { cols, rows } = layout;
 
   const CANVAS_W = 560;
-  const CANVAS_H = 728;
-  const MARGIN = 16;
-  const GAP = 6;
+  const CANVAS_H = Math.round(560 * (PAPER_H / PAPER_W)); // proporción Oficio 2
+  const MARGIN   = 16;
+  const GAP      = 6;
 
   const cellW = (CANVAS_W - MARGIN * 2 - GAP * (cols - 1)) / cols;
   const cellH = (CANVAS_H - MARGIN * 2 - GAP * (rows - 1)) / rows;
@@ -192,18 +187,17 @@ async function generateLayoutPreview(
 
   for (let pageIdx = 0; pageIdx < totalPages; pageIdx++) {
     const canvas = document.createElement("canvas");
-    canvas.width = CANVAS_W;
+    canvas.width  = CANVAS_W;
     canvas.height = CANVAS_H;
     const ctx = canvas.getContext("2d")!;
-
     ctx.fillStyle = "#ffffff";
     ctx.fillRect(0, 0, CANVAS_W, CANVAS_H);
 
     const batch = files.slice(pageIdx * imagesPerPage, (pageIdx + 1) * imagesPerPage);
 
     for (let i = 0; i < batch.length; i++) {
-      const col = i % cols;
-      const row = Math.floor(i / cols);
+      const col   = i % cols;
+      const row   = Math.floor(i / cols);
       const cellX = MARGIN + col * (cellW + GAP);
       const cellY = MARGIN + row * (cellH + GAP);
 
@@ -216,11 +210,9 @@ async function generateLayoutPreview(
         img.onload = () => {
           URL.revokeObjectURL(url);
           const scale = Math.min(cellW / img.width, cellH / img.height);
-          const drawW = img.width * scale;
+          const drawW = img.width  * scale;
           const drawH = img.height * scale;
-          const x = cellX + (cellW - drawW) / 2;
-          const y = cellY + (cellH - drawH) / 2;
-          ctx.drawImage(img, x, y, drawW, drawH);
+          ctx.drawImage(img, cellX + (cellW - drawW) / 2, cellY + (cellH - drawH) / 2, drawW, drawH);
           resolve();
         };
         img.onerror = () => { URL.revokeObjectURL(url); resolve(); };
@@ -229,29 +221,74 @@ async function generateLayoutPreview(
     }
 
     ctx.strokeStyle = "#d1d5db";
-    ctx.lineWidth = 1;
+    ctx.lineWidth   = 1;
     ctx.strokeRect(0.5, 0.5, CANVAS_W - 1, CANVAS_H - 1);
-
     previews.push(canvas.toDataURL("image/jpeg", 0.88));
   }
 
   return previews;
 }
 
-// ── Tipos y schema ─────────────────────────────────────────
+// ── Helper para contar diapositivas de PPTX ───────────────────
+
+async function getPptxSlideCount(file: File): Promise<number> {
+  try {
+    const buffer  = await file.arrayBuffer();
+    const text    = new TextDecoder("latin1").decode(new Uint8Array(buffer));
+    const pattern = /ppt\/slides\/slide(\d+)\.xml/g;
+    const nums    = new Set<number>();
+    let m;
+    while ((m = pattern.exec(text)) !== null) nums.add(parseInt(m[1]));
+    return nums.size > 0 ? nums.size : 1;
+  } catch {
+    return 1;
+  }
+}
+
+async function generatePdfThumbnail(file: File, maxWidth = 400): Promise<Blob> {
+  const pdfjsLib = await import("pdfjs-dist");
+  pdfjsLib.GlobalWorkerOptions.workerSrc =
+    `https://unpkg.com/pdfjs-dist@${pdfjsLib.version}/build/pdf.worker.min.mjs`;
+
+  const arrayBuffer = await file.arrayBuffer();
+  const pdf  = await pdfjsLib.getDocument({ data: new Uint8Array(arrayBuffer) }).promise;
+  const page = await pdf.getPage(1);
+
+  const baseViewport = page.getViewport({ scale: 1 });
+  const scale        = maxWidth / baseViewport.width;
+  const viewport     = page.getViewport({ scale });
+
+  const canvas = document.createElement("canvas");
+  canvas.width  = Math.round(viewport.width);
+  canvas.height = Math.round(viewport.height);
+  const ctx = canvas.getContext("2d")!;
+  ctx.fillStyle = "#ffffff";
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+  await page.render({ canvas, viewport }).promise;
+
+  return new Promise<Blob>((resolve, reject) => {
+    canvas.toBlob(
+      (blob) => (blob ? resolve(blob) : reject(new Error("Error al generar miniatura del PDF"))),
+      "image/jpeg",
+      0.85
+    );
+  });
+}
+
+// ── Tipos y schema ─────────────────────────────────────────────
 
 interface PrintFormProps {
-  qrTokenId: string;
-  priceBw: number;
-  priceColor: number;
+  qrTokenId:          string;
+  priceBw:            number;
+  priceColor:         number;
   maxPagesNoApproval: number;
-  maxFileSizeMb: number;
+  maxFileSizeMb:      number;
 }
 
 const printSchema = z.object({
   clientName: z.string().min(2, "Mínimo 2 caracteres").max(100),
-  copyCount: z.coerce.number().int().min(1, "Mínimo 1 copia").max(99),
-  printType: z.enum(["bw", "color"]),
+  copyCount:  z.coerce.number().int().min(1, "Mínimo 1 copia").max(99),
+  printType:  z.enum(["bw", "color"]),
 });
 
 type PrintFormData = z.infer<typeof printSchema>;
@@ -259,45 +296,41 @@ type Step = "form" | "summary" | "success";
 
 interface SuccessData {
   correlative: string;
-  totalPrice: number;
-  clientName: string;
+  totalPrice:  number;
+  clientName:  string;
 }
 
-// ── Componente ─────────────────────────────────────────────
+// ── Componente ─────────────────────────────────────────────────
 
 export function PrintForm({
   qrTokenId, priceBw, priceColor, maxPagesNoApproval, maxFileSizeMb,
 }: PrintFormProps) {
-  const [step, setStep] = useState<Step>("form");
-  const [files, setFiles] = useState<File[]>([]);
-  const [fileError, setFileError] = useState<string | null>(null);
-  const [pageCount, setPageCount] = useState(1);
-  const [imagesPerPage, setImagesPerPage] = useState<LayoutValue>(1);
-  const [successData, setSuccessData] = useState<SuccessData | null>(null);
+  const [step,         setStep        ] = useState<Step>("form");
+  const [files,        setFiles       ] = useState<File[]>([]);
+  const [fileError,    setFileError   ] = useState<string | null>(null);
+  const [pageCount,    setPageCount   ] = useState(1);
+  const [imagesPerPage,setImagesPerPage] = useState<LayoutValue>(1);
+  const [slidesPerPage,setSlidesPerPage] = useState<SlidesPerPage>(1);
+  const [successData,  setSuccessData ] = useState<SuccessData | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
-  const [serverError, setServerError] = useState<string | null>(null);
-  const [formValues, setFormValues] = useState<PrintFormData | null>(null);
-
+  const [serverError,  setServerError ] = useState<string | null>(null);
+  const [formValues,   setFormValues  ] = useState<PrintFormData | null>(null);
   const [isConverting, setIsConverting] = useState(false);
   const [convertedPdf, setConvertedPdf] = useState<Blob | null>(null);
-  const [thumbnailBlob, setThumbnailBlob] = useState<Blob | null>(null);
+  const [thumbnailBlob,setThumbnailBlob] = useState<Blob | null>(null);
   const [thumbnailUrl, setThumbnailUrl] = useState<string | null>(null);
 
-  // Tamaño de papel (solo PDF)
-  const [detectedPaperSize, setDetectedPaperSize] = useState<PaperSize | "otro" | null>(null);
-  const [targetPaperSize, setTargetPaperSize] = useState<PaperSize>("carta");
-
-  // Rango de páginas (solo PDF)
-  const [printRange, setPrintRange] = useState<PrintRange>("all");
+  // Rango de impresión (PDF y PPTX)
+  const [printRange,      setPrintRange     ] = useState<PrintRange>("all");
   const [rangeSinglePage, setRangeSinglePage] = useState(1);
-  const [rangeFrom, setRangeFrom] = useState(1);
-  const [rangeTo, setRangeTo] = useState(1);
+  const [rangeFrom,       setRangeFrom      ] = useState(1);
+  const [rangeTo,         setRangeTo        ] = useState(1);
 
-  // Vista previa
-  const [previewPages, setPreviewPages] = useState<string[] | null>(null);
-  const [showPreview, setShowPreview] = useState(false);
+  // Vista previa de imágenes
+  const [previewPages,        setPreviewPages       ] = useState<string[] | null>(null);
+  const [showPreview,         setShowPreview        ] = useState(false);
   const [isGeneratingPreview, setIsGeneratingPreview] = useState(false);
-  const [previewPageIdx, setPreviewPageIdx] = useState(0);
+  const [previewPageIdx,      setPreviewPageIdx     ] = useState(0);
 
   const { register, handleSubmit, watch, formState: { errors } } = useForm<PrintFormData>({
     resolver: zodResolver(printSchema),
@@ -306,23 +339,29 @@ export function PrintForm({
 
   const currentPrintType = watch("printType") ?? "bw";
   const currentCopyCount = watch("copyCount") ?? 1;
-  const pricePerPage = currentPrintType === "bw" ? priceBw : priceColor;
+  const pricePerPage     = currentPrintType === "bw" ? priceBw : priceColor;
 
-  const pdfMode = files.length > 0 && isPdfFile(files[0]);
-  const imageMode = files.length > 0 && !pdfMode;
+  const pdfMode   = files.length > 0 && isPdfFile(files[0]);
+  const imageMode = files.length > 0 && isImageFile(files[0]);
+  const wordMode  = files.length > 0 && isWordFile(files[0]);
+  const pptxMode  = files.length > 0 && isPptxFile(files[0]);
 
-  // Páginas efectivas según el rango seleccionado
-  const effectivePageCount =
-    printRange === "all" ? pageCount :
+  // Páginas/diapositivas efectivas según el rango
+  const rawEffectiveCount =
+    printRange === "all"    ? pageCount :
     printRange === "single" ? 1 :
     Math.max(1, Math.min(rangeTo, pageCount) - Math.max(1, rangeFrom) + 1);
 
-  const estimatedTotal = Math.round(pricePerPage * effectivePageCount * currentCopyCount * 100) / 100;
+  // Para PPTX las hojas físicas se reducen según diapositivas por hoja
+  const effectivePageCount = pptxMode
+    ? Math.ceil(rawEffectiveCount / slidesPerPage)
+    : rawEffectiveCount;
 
-  // Altura del contenedor de miniatura según el formato seleccionado
-  const thumbContainerHeight = pdfMode
-    ? Math.round(120 * (PAPER[targetPaperSize].h / PAPER[targetPaperSize].w))
-    : 120;
+  const estimatedTotal =
+    Math.round(pricePerPage * effectivePageCount * currentCopyCount * 100) / 100;
+
+  // Altura del contenedor de miniatura (proporción Oficio 2)
+  const thumbContainerHeight = Math.round(120 * (PAPER_H / PAPER_W)); // ≈ 184 px
 
   // URL de miniatura
   useEffect(() => {
@@ -332,16 +371,15 @@ export function PrintForm({
     return () => URL.revokeObjectURL(url);
   }, [thumbnailBlob]);
 
-  // Invalidar preview cacheada cuando cambia el archivo o el layout
+  // Invalidar preview cacheada al cambiar archivo o layout
   useEffect(() => {
     setPreviewPages(null);
     setPreviewPageIdx(0);
   }, [files, imagesPerPage]);
 
-  // Conversión imágenes → PDF
+  // Conversión imágenes → PDF (en Oficio 2)
   useEffect(() => {
-    if (files.length === 0) return;
-    if (isPdfFile(files[0])) return;
+    if (files.length === 0 || !isImageFile(files[0])) return;
 
     let cancelled = false;
     setIsConverting(true);
@@ -370,7 +408,7 @@ export function PrintForm({
     return () => { cancelled = true; };
   }, [files, imagesPerPage]);
 
-  // ── Manejo de archivo ──────────────────────────────────
+  // ── Manejo de archivo ──────────────────────────────────────
 
   async function handleFileChange(e: React.ChangeEvent<HTMLInputElement>) {
     const selected = Array.from(e.target.files ?? []);
@@ -379,15 +417,21 @@ export function PrintForm({
     setFileError(null);
     setConvertedPdf(null);
     setThumbnailBlob(null);
-    setDetectedPaperSize(null);
-    setTargetPaperSize("carta");
     setPrintRange("all");
     setRangeSinglePage(1);
     setRangeFrom(1);
     setRangeTo(1);
+    setSlidesPerPage(1);
 
-    const allowedMimes = ["application/pdf", "image/jpeg", "image/jpg", "image/png", "image/webp"];
-    const allowedExts = ["pdf", "jpg", "jpeg", "png", "webp"];
+    const allowedMimes = [
+      "application/pdf",
+      "image/jpeg", "image/jpg", "image/png", "image/webp",
+      "application/msword",
+      "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+      "application/vnd.ms-powerpoint",
+      "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+    ];
+    const allowedExts = ["pdf", "jpg", "jpeg", "png", "webp", "doc", "docx", "ppt", "pptx"];
 
     for (const f of selected) {
       if (f.size > maxFileSizeMb * 1024 * 1024) {
@@ -396,44 +440,66 @@ export function PrintForm({
       }
       const ext = f.name.split(".").pop()?.toLowerCase() ?? "";
       if (!allowedMimes.includes(f.type) && !allowedExts.includes(ext)) {
-        setFileError(`Formato no permitido: "${f.name}". Solo PDF, JPG, PNG o WEBP.`);
+        setFileError(`Formato no permitido: "${f.name}". Solo PDF, Word, PowerPoint, JPG, PNG o WEBP.`);
         return;
       }
     }
 
-    const pdfFile = selected.find(isPdfFile);
+    // Solo se puede mezclar un tipo a la vez
+    const hasDoc  = selected.some((f) => isPdfFile(f) || isWordFile(f) || isPptxFile(f));
+    const hasImg  = selected.some(isImageFile);
+    if (hasDoc && hasImg) {
+      setFileError("No puedes mezclar documentos e imágenes. Selecciona solo uno de cada tipo.");
+      return;
+    }
+    if (hasDoc && selected.length > 1) {
+      setFileError("Solo puedes seleccionar un documento (PDF, Word o PowerPoint) a la vez.");
+      return;
+    }
+
+    const pdfFile  = selected.find(isPdfFile);
+    const wordFile = selected.find(isWordFile);
+    const pptxFile = selected.find(isPptxFile);
+
     if (pdfFile) {
       setFiles([pdfFile]);
       setIsConverting(true);
       try {
-        // Leer página count y tamaño de papel con pdf-lib
         const { PDFDocument } = await import("pdf-lib");
         const bytes = await pdfFile.arrayBuffer();
-        const doc = await PDFDocument.load(bytes);
+        const doc   = await PDFDocument.load(bytes);
         const count = doc.getPageCount();
-        const firstPage = doc.getPage(0);
-        const { width, height } = firstPage.getSize();
-
-        const detected = detectPaperSize(width, height);
         setPageCount(count);
         setRangeTo(count);
-        setDetectedPaperSize(detected);
-        setTargetPaperSize(detected === "otro" ? "carta" : detected);
-
-        // Generar miniatura con pdfjs-dist
         try {
           const thumb = await generatePdfThumbnail(pdfFile, 400);
           setThumbnailBlob(thumb);
-        } catch {
-          // Miniatura no crítica — fallback al ícono
-        }
+        } catch { /* miniatura no crítica */ }
       } catch {
         setPageCount(1);
         setRangeTo(1);
       } finally {
         setIsConverting(false);
       }
+    } else if (pptxFile) {
+      setFiles([pptxFile]);
+      setIsConverting(true);
+      try {
+        const count = await getPptxSlideCount(pptxFile);
+        setPageCount(count);
+        setRangeTo(count);
+      } catch {
+        setPageCount(1);
+        setRangeTo(1);
+      } finally {
+        setIsConverting(false);
+      }
+    } else if (wordFile) {
+      setFiles([wordFile]);
+      setPageCount(1);
+      setRangeTo(1);
     } else {
+      // Imágenes
       setImagesPerPage(1);
       setFiles(selected);
     }
@@ -442,13 +508,12 @@ export function PrintForm({
   function clearFiles() {
     setFiles([]);
     setImagesPerPage(1);
+    setSlidesPerPage(1);
     setFileError(null);
     setPageCount(1);
     setConvertedPdf(null);
     setThumbnailBlob(null);
     setPreviewPages(null);
-    setDetectedPaperSize(null);
-    setTargetPaperSize("carta");
     setPrintRange("all");
     setRangeSinglePage(1);
     setRangeFrom(1);
@@ -462,26 +527,25 @@ export function PrintForm({
     try {
       const pages = await generateLayoutPreview(files, imagesPerPage);
       setPreviewPages(pages);
-    } catch {
-      // preview no crítica
-    } finally {
+    } catch { /* no crítico */ } finally {
       setIsGeneratingPreview(false);
     }
   }
 
   function onFormSubmit(data: PrintFormData) {
-    if (files.length === 0) { setFileError("Debes seleccionar un archivo."); return; }
+    if (files.length === 0)  { setFileError("Debes seleccionar un archivo."); return; }
     if (isConverting) return;
     if (imageMode && !convertedPdf) {
       setFileError("No se pudo procesar las imágenes. Vuelve a seleccionarlas.");
       return;
     }
-    if (printRange === "single" && (rangeSinglePage < 1 || rangeSinglePage > pageCount)) {
-      setFileError(`La página debe estar entre 1 y ${pageCount}.`);
+    if ((pdfMode || pptxMode) && printRange === "single" &&
+        (rangeSinglePage < 1 || rangeSinglePage > pageCount)) {
+      setFileError(`El número debe estar entre 1 y ${pageCount}.`);
       return;
     }
-    if (printRange === "range" && rangeFrom > rangeTo) {
-      setFileError("El rango de páginas no es válido.");
+    if ((pdfMode || pptxMode) && printRange === "range" && rangeFrom > rangeTo) {
+      setFileError("El rango no es válido.");
       return;
     }
     setFormValues(data);
@@ -493,28 +557,45 @@ export function PrintForm({
     setIsSubmitting(true);
     setServerError(null);
 
-    let filePath: string | null = null;
+    let filePath:      string | null = null;
     let thumbnailPath: string | null = null;
 
     try {
-      const supabase = createClient();
-      const fileToUpload = pdfMode ? files[0] : convertedPdf;
+      const supabase     = createClient();
+      const fileToUpload = imageMode ? convertedPdf : files[0];
       if (!fileToUpload) throw new Error("El archivo no está listo. Espera unos segundos.");
 
-      const finalName = pdfMode
-        ? files[0].name
-        : files.length === 1
+      // Extensión y content type según tipo de archivo
+      let ext         = "pdf";
+      let contentType = "application/pdf";
+
+      if (imageMode) {
+        const name = files.length === 1
           ? files[0].name.replace(/\.[^.]+$/, ".pdf")
           : `${files.length}_imagenes.pdf`;
-
-      filePath = `jobs/${Date.now()}-${Math.random().toString(36).slice(2)}.pdf`;
-
-      const { error: uploadError } = await supabase.storage
-        .from("print-files")
-        .upload(filePath, fileToUpload, { contentType: "application/pdf", upsert: false });
-
-      if (uploadError)
-        throw new Error("Error al subir el archivo: " + uploadError.message);
+        ext = "pdf";
+        filePath = `jobs/${Date.now()}-${Math.random().toString(36).slice(2)}.pdf`;
+        const { error: uploadError } = await supabase.storage
+          .from("print-files")
+          .upload(filePath, fileToUpload, { contentType: "application/pdf", upsert: false });
+        if (uploadError) throw new Error("Error al subir el archivo: " + uploadError.message);
+      } else {
+        ext = files[0].name.split(".").pop()?.toLowerCase() ?? "pdf";
+        if (wordMode) {
+          contentType = ext === "doc"
+            ? "application/msword"
+            : "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
+        } else if (pptxMode) {
+          contentType = ext === "ppt"
+            ? "application/vnd.ms-powerpoint"
+            : "application/vnd.openxmlformats-officedocument.presentationml.presentation";
+        }
+        filePath = `jobs/${Date.now()}-${Math.random().toString(36).slice(2)}.${ext}`;
+        const { error: uploadError } = await supabase.storage
+          .from("print-files")
+          .upload(filePath, files[0], { contentType, upsert: false });
+        if (uploadError) throw new Error("Error al subir el archivo: " + uploadError.message);
+      }
 
       if (thumbnailBlob) {
         const tp = `jobs/${Date.now()}-${Math.random().toString(36).slice(2)}.jpg`;
@@ -524,15 +605,22 @@ export function PrintForm({
         if (!thumbErr) thumbnailPath = tp;
       }
 
+      const finalName = imageMode
+        ? (files.length === 1
+            ? files[0].name.replace(/\.[^.]+$/, ".pdf")
+            : `${files.length}_imagenes.pdf`)
+        : files[0].name;
+
       const result = await submitPrintJob({
         qrTokenId,
-        clientName: formValues.clientName,
-        printType: formValues.printType,
-        pageCount: effectivePageCount,
-        copyCount: formValues.copyCount,
+        clientName:       formValues.clientName,
+        printType:        formValues.printType,
+        pageCount:        effectivePageCount,
+        copyCount:        formValues.copyCount,
         filePath,
         originalFileName: finalName,
-        thumbnailPath: thumbnailPath ?? undefined,
+        thumbnailPath:    thumbnailPath ?? undefined,
+        slidesPerPage:    pptxMode ? slidesPerPage : undefined,
       });
 
       if (!result.success) {
@@ -544,8 +632,8 @@ export function PrintForm({
 
       setSuccessData({
         correlative: result.correlative,
-        totalPrice: result.totalPrice,
-        clientName: result.clientName,
+        totalPrice:  result.totalPrice,
+        clientName:  result.clientName,
       });
       setStep("success");
     } catch (err) {
@@ -555,17 +643,14 @@ export function PrintForm({
     }
   }
 
-  // ── Modal de vista previa ─────────────────────────────
+  // ── Modal de vista previa (imágenes) ──────────────────────
 
   const previewModal = showPreview && (
     <div
       className="fixed inset-0 z-50 flex flex-col bg-black/80"
       onClick={() => setShowPreview(false)}
     >
-      <div
-        className="flex flex-1 flex-col overflow-hidden"
-        onClick={(e) => e.stopPropagation()}
-      >
+      <div className="flex flex-1 flex-col overflow-hidden" onClick={(e) => e.stopPropagation()}>
         <div className="flex items-center justify-between bg-black/60 px-4 py-3">
           <p className="text-sm font-semibold text-white">Vista previa del documento</p>
           <div className="flex items-center gap-3">
@@ -649,7 +734,7 @@ export function PrintForm({
     </div>
   );
 
-  // ── PASO 1: Formulario ─────────────────────────────────
+  // ── PASO 1: Formulario ─────────────────────────────────────
 
   if (step === "form") {
     return (
@@ -682,7 +767,7 @@ export function PrintForm({
                 <input
                   id="file-upload"
                   type="file"
-                  accept=".pdf,.jpg,.jpeg,.png,.webp"
+                  accept=".pdf,.doc,.docx,.ppt,.pptx,.jpg,.jpeg,.png,.webp"
                   multiple
                   className="absolute inset-0 h-full w-full cursor-pointer opacity-0"
                   onChange={handleFileChange}
@@ -692,7 +777,7 @@ export function PrintForm({
                   Toca aquí para elegir archivo
                 </p>
                 <p className="mt-1 text-sm text-gray-500">
-                  PDF · JPG · PNG · WEBP · Máx. {maxFileSizeMb} MB
+                  PDF · Word · PowerPoint · JPG · PNG · WEBP · Máx. {maxFileSizeMb} MB
                 </p>
                 <p className="mt-0.5 text-xs text-gray-400">
                   Puedes seleccionar varias imágenes a la vez
@@ -700,7 +785,7 @@ export function PrintForm({
               </label>
             ) : (
               <>
-                {/* Tarjeta de archivo(s) */}
+                {/* Tarjeta del archivo */}
                 <div className="flex items-center gap-3 rounded-xl border border-green-200 bg-green-50 p-4">
                   {isConverting ? (
                     <div className="flex h-14 w-14 flex-shrink-0 items-center justify-center rounded-lg bg-blue-50">
@@ -733,7 +818,9 @@ export function PrintForm({
                       {isConverting ? "Procesando archivo…" : (
                         <>
                           {imageMode && <span className="text-blue-600">→ PDF · </span>}
-                          {pageCount} {pageCount === 1 ? "página" : "páginas"} ·{" "}
+                          {pdfMode   && `${pageCount} ${pageCount === 1 ? "página" : "páginas"} · `}
+                          {pptxMode  && `${pageCount} ${pageCount === 1 ? "diapositiva" : "diapositivas"} · `}
+                          {wordMode  && "Word · "}
                           {(files.reduce((s, f) => s + f.size, 0) / 1024 / 1024).toFixed(2)} MB
                         </>
                       )}
@@ -750,85 +837,25 @@ export function PrintForm({
                   </button>
                 </div>
 
-                {/* ── Sección PDF: tamaño y miniatura ── */}
+                {/* Info para PDF */}
                 {pdfMode && !isConverting && (
                   <div className="mt-4 space-y-3">
-                    {/* Tamaño detectado */}
-                    {detectedPaperSize !== null && (
-                      <p className="text-xs text-gray-500">
-                        Tamaño detectado:{" "}
-                        <span className="font-semibold text-gray-700">
-                          {detectedPaperSize === "otro"
-                            ? "Formato personalizado"
-                            : `${PAPER[detectedPaperSize].label} (${PAPER[detectedPaperSize].desc})`}
-                        </span>
-                      </p>
-                    )}
-
-                    {/* Selector de formato de impresión */}
-                    <div>
-                      <p className="mb-2 text-xs font-medium text-gray-600">
-                        Imprimir en formato
-                      </p>
-                      <div className="flex gap-2">
-                        {(["carta", "oficio"] as PaperSize[]).map((size) => (
-                          <button
-                            key={size}
-                            type="button"
-                            onClick={() => setTargetPaperSize(size)}
-                            className={cn(
-                              "flex flex-1 flex-col items-center gap-1.5 rounded-xl border-2 py-3 px-2 transition-colors",
-                              targetPaperSize === size
-                                ? "border-blue-500 bg-blue-50"
-                                : "border-gray-200 bg-white"
-                            )}
-                          >
-                            {/* Icono de hoja con proporción del papel */}
-                            <div
-                              className={cn(
-                                "rounded-sm border-2 transition-all",
-                                targetPaperSize === size
-                                  ? "border-blue-400 bg-blue-100"
-                                  : "border-gray-300 bg-gray-50"
-                              )}
-                              style={{
-                                width: 24,
-                                height: size === "carta" ? 31 : 40,
-                              }}
-                            />
-                            <span className={cn(
-                              "text-xs font-semibold",
-                              targetPaperSize === size ? "text-blue-700" : "text-gray-600"
-                            )}>
-                              {PAPER[size].label}
-                            </span>
-                            <span className={cn(
-                              "text-[10px]",
-                              targetPaperSize === size ? "text-blue-500" : "text-gray-400"
-                            )}>
-                              {PAPER[size].desc}
-                            </span>
-                          </button>
-                        ))}
-                      </div>
-                    </div>
-
-                    {/* Miniatura del PDF en el formato seleccionado */}
+                    <p className="text-xs text-gray-500">
+                      Se imprimirá en formato{" "}
+                      <span className="font-semibold text-gray-700">
+                        {PAPER_LABEL} ({PAPER_DESC})
+                      </span>
+                    </p>
                     {thumbnailUrl && (
                       <div className="flex flex-col items-center gap-1.5">
-                        <p className="text-xs text-gray-500">
-                          Vista en formato {PAPER[targetPaperSize].label}
-                        </p>
+                        <p className="text-xs text-gray-500">Vista previa (primera página)</p>
                         <div
-                          className="overflow-hidden rounded-lg border-2 border-gray-300 bg-white shadow-sm transition-all duration-300"
-                          style={{
-                            width: 120,
-                            height: thumbContainerHeight,
-                          }}
+                          className="overflow-hidden rounded-lg border-2 border-gray-300 bg-white shadow-sm"
+                          style={{ width: 120, height: thumbContainerHeight }}
                         >
                           <img
                             src={thumbnailUrl}
-                            alt={`Vista previa en ${PAPER[targetPaperSize].label}`}
+                            alt="Vista previa"
                             className="h-full w-full object-contain"
                           />
                         </div>
@@ -837,7 +864,28 @@ export function PrintForm({
                   </div>
                 )}
 
-                {/* Selector de layout — solo para imágenes */}
+                {/* Info para PPTX */}
+                {pptxMode && !isConverting && (
+                  <p className="mt-3 text-xs text-gray-500">
+                    Se imprimirá en formato{" "}
+                    <span className="font-semibold text-gray-700">
+                      {PAPER_LABEL} ({PAPER_DESC})
+                    </span>
+                  </p>
+                )}
+
+                {/* Info para Word */}
+                {wordMode && (
+                  <p className="mt-3 text-xs text-gray-500">
+                    Se imprimirá en formato{" "}
+                    <span className="font-semibold text-gray-700">
+                      {PAPER_LABEL} ({PAPER_DESC})
+                    </span>
+                    . El precio final depende del número real de páginas.
+                  </p>
+                )}
+
+                {/* Selector de layout — solo imágenes */}
                 {imageMode && (
                   <div className="mt-3">
                     <p className="mb-2 text-xs font-medium text-gray-600">
@@ -861,7 +909,7 @@ export function PrintForm({
                             style={{
                               display: "grid",
                               gridTemplateColumns: `repeat(${opt.cols}, 1fr)`,
-                              gridTemplateRows: `repeat(${opt.rows}, 1fr)`,
+                              gridTemplateRows:    `repeat(${opt.rows}, 1fr)`,
                               width: opt.cols >= 4 ? 36 : 28,
                               height: 36,
                               gap: "2px",
@@ -927,8 +975,8 @@ export function PrintForm({
                 <div className="grid grid-cols-2 gap-3">
                   {(
                     [
-                      { value: "bw", label: "Blanco y Negro", price: priceBw },
-                      { value: "color", label: "Color", price: priceColor },
+                      { value: "bw",    label: "Blanco y Negro", price: priceBw    },
+                      { value: "color", label: "Color",          price: priceColor },
                     ] as const
                   ).map((opt) => (
                     <label
@@ -956,7 +1004,7 @@ export function PrintForm({
                       />
                       <span className="text-sm font-semibold text-gray-900">{opt.label}</span>
                       <span className="text-xs text-gray-500">
-                        {formatCurrency(opt.price)} / página
+                        {formatCurrency(opt.price)} / hoja
                       </span>
                     </label>
                   ))}
@@ -966,18 +1014,30 @@ export function PrintForm({
                 )}
               </div>
 
-              {/* Rango de páginas — solo PDF con más de 1 página */}
-              {pdfMode && !isConverting && pageCount > 1 && (
+              {/* Rango de páginas — PDF y PPTX con más de 1 página/diapositiva */}
+              {(pdfMode || pptxMode) && !isConverting && pageCount > 1 && (
                 <div>
                   <p className="mb-3 text-sm font-medium text-gray-700">
-                    Páginas a imprimir
+                    {pptxMode ? "Diapositivas a imprimir" : "Páginas a imprimir"}
                   </p>
                   <div className="space-y-2">
                     {(
                       [
-                        { value: "all",    label: "Todo el documento", extra: `${pageCount} páginas` },
-                        { value: "single", label: "Una página",        extra: "" },
-                        { value: "range",  label: "Rango de páginas",  extra: "" },
+                        {
+                          value: "all",
+                          label: pptxMode ? "Todas las diapositivas" : "Todo el documento",
+                          extra: `${pageCount} ${pptxMode ? "diapositivas" : "páginas"}`,
+                        },
+                        {
+                          value: "single",
+                          label: pptxMode ? "Una diapositiva" : "Una página",
+                          extra: "",
+                        },
+                        {
+                          value: "range",
+                          label: pptxMode ? "Rango de diapositivas" : "Rango de páginas",
+                          extra: "",
+                        },
                       ] as const
                     ).map((opt) => (
                       <label
@@ -1012,11 +1072,10 @@ export function PrintForm({
                     ))}
                   </div>
 
-                  {/* Input de página única */}
                   {printRange === "single" && (
                     <div className="mt-3">
                       <Input
-                        label={`Número de página (1 – ${pageCount})`}
+                        label={`Número de ${pptxMode ? "diapositiva" : "página"} (1 – ${pageCount})`}
                         type="number"
                         inputMode="numeric"
                         min={1}
@@ -1031,7 +1090,6 @@ export function PrintForm({
                     </div>
                   )}
 
-                  {/* Inputs de rango */}
                   {printRange === "range" && (
                     <div className="mt-3 grid grid-cols-2 gap-3">
                       <Input
@@ -1065,8 +1123,75 @@ export function PrintForm({
 
                   {printRange !== "all" && (
                     <p className="mt-2 text-xs font-medium text-blue-600">
-                      Se imprimirán {effectivePageCount}{" "}
-                      {effectivePageCount === 1 ? "página" : "páginas"}
+                      {pptxMode
+                        ? `${rawEffectiveCount} ${rawEffectiveCount === 1 ? "diapositiva" : "diapositivas"} seleccionadas`
+                        : `Se imprimirán ${rawEffectiveCount} ${rawEffectiveCount === 1 ? "página" : "páginas"}`
+                      }
+                    </p>
+                  )}
+                </div>
+              )}
+
+              {/* Diapositivas por hoja — solo PPTX */}
+              {pptxMode && !isConverting && (
+                <div>
+                  <p className="mb-2 text-sm font-medium text-gray-700">
+                    Diapositivas por hoja
+                  </p>
+                  <div className="flex flex-wrap gap-2">
+                    {SLIDES_PER_PAGE_OPTIONS.map((n) => {
+                      const layout = SLIDE_LAYOUT[n];
+                      return (
+                        <button
+                          key={n}
+                          type="button"
+                          onClick={() => setSlidesPerPage(n)}
+                          className={cn(
+                            "flex flex-col items-center gap-1 rounded-xl border-2 p-2 transition-colors",
+                            slidesPerPage === n
+                              ? "border-blue-500 bg-blue-50"
+                              : "border-gray-200 bg-white"
+                          )}
+                        >
+                          <div
+                            style={{
+                              display: "grid",
+                              gridTemplateColumns: `repeat(${layout.cols}, 1fr)`,
+                              gridTemplateRows:    `repeat(${layout.rows}, 1fr)`,
+                              width: 28,
+                              height: 36,
+                              gap: "2px",
+                              padding: "2px",
+                              backgroundColor: "#d1d5db",
+                              borderRadius: 3,
+                            }}
+                          >
+                            {Array.from({ length: n }).map((_, i) => (
+                              <div
+                                key={i}
+                                style={{
+                                  backgroundColor:
+                                    slidesPerPage === n ? "#60a5fa" : "#f3f4f6",
+                                  borderRadius: 1,
+                                }}
+                              />
+                            ))}
+                          </div>
+                          <span className={cn(
+                            "text-xs font-semibold",
+                            slidesPerPage === n ? "text-blue-700" : "text-gray-500"
+                          )}>
+                            {n}
+                          </span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                  {slidesPerPage > 1 && rawEffectiveCount > 0 && (
+                    <p className="mt-2 text-xs text-gray-500">
+                      {Math.ceil(rawEffectiveCount / slidesPerPage)}{" "}
+                      {Math.ceil(rawEffectiveCount / slidesPerPage) === 1 ? "hoja" : "hojas"} de impresión
+                      ({slidesPerPage} diapositiva{slidesPerPage !== 1 ? "s" : ""} por hoja)
                     </p>
                   )}
                 </div>
@@ -1095,18 +1220,30 @@ export function PrintForm({
                     <span>Imágenes:</span><span>{files.length}</span>
                   </div>
                 )}
+                {pptxMode && slidesPerPage > 1 && (
+                  <div className="flex justify-between">
+                    <span>Diapositivas:</span><span>{rawEffectiveCount}</span>
+                  </div>
+                )}
                 <div className="flex justify-between">
-                  <span>Páginas a imprimir:</span><span>{effectivePageCount}</span>
+                  <span>Hojas a imprimir:</span>
+                  <span>{wordMode ? "?" : effectivePageCount}</span>
                 </div>
                 <div className="flex justify-between">
                   <span>Copias:</span><span>{currentCopyCount}</span>
                 </div>
                 <div className="flex justify-between">
-                  <span>Precio por página:</span><span>{formatCurrency(pricePerPage)}</span>
+                  <span>Precio por hoja:</span><span>{formatCurrency(pricePerPage)}</span>
                 </div>
-                <div className="flex justify-between border-t border-blue-200 pt-1 font-bold">
-                  <span>Total estimado:</span><span>{formatCurrency(estimatedTotal)}</span>
-                </div>
+                {wordMode ? (
+                  <p className="border-t border-blue-200 pt-1 text-xs text-blue-500">
+                    El precio final se calcula al imprimir (páginas desconocidas).
+                  </p>
+                ) : (
+                  <div className="flex justify-between border-t border-blue-200 pt-1 font-bold">
+                    <span>Total estimado:</span><span>{formatCurrency(estimatedTotal)}</span>
+                  </div>
+                )}
               </div>
             </div>
           )}
@@ -1125,38 +1262,42 @@ export function PrintForm({
     );
   }
 
-  // ── PASO 2: Resumen ────────────────────────────────────
+  // ── PASO 2: Resumen ────────────────────────────────────────
 
   if (step === "summary" && formValues) {
-    const printRangeLabel =
-      printRange === "all"
-        ? `${pageCount} ${pageCount === 1 ? "página" : "páginas"} (todo el documento)`
-        : printRange === "single"
-          ? `Página ${rangeSinglePage} (1 de ${pageCount})`
-          : `Páginas ${rangeFrom} – ${rangeTo} (${effectivePageCount} de ${pageCount})`;
+    const rangeLabel =
+      wordMode
+        ? "Todo el documento"
+        : imageMode
+          ? `${pageCount} ${pageCount === 1 ? "página" : "páginas"}`
+          : printRange === "all"
+            ? `${pageCount} ${pptxMode ? "diapositivas" : (pageCount === 1 ? "página" : "páginas")} (todo)`
+            : printRange === "single"
+              ? `${pptxMode ? "Diapositiva" : "Página"} ${rangeSinglePage} (1 de ${pageCount})`
+              : `${pptxMode ? "Diapositivas" : "Páginas"} ${rangeFrom}–${rangeTo} (${rawEffectiveCount} de ${pageCount})`;
+
+    const fileTypeLabel = pdfMode ? "PDF" : wordMode ? "Word" : pptxMode ? "PowerPoint"
+      : files.length === 1 ? "Imagen" : `${files.length} imágenes`;
 
     const summaryRows = [
-      { label: "Nombre", value: formValues.clientName },
+      { label: "Nombre",          value: formValues.clientName },
       {
         label: "Archivo",
         value: pdfMode
-          ? (files[0]?.name ?? "")
-          : files.length === 1
-            ? files[0].name
-            : `${files.length} imágenes`,
+          ? files[0].name
+          : imageMode
+            ? (files.length === 1 ? files[0].name : `${files.length} imágenes`)
+            : files[0].name,
       },
-      ...(pdfMode ? [{
-        label: "Formato de impresión",
-        value: `${PAPER[targetPaperSize].label} (${PAPER[targetPaperSize].desc})`,
-      }] : []),
-      ...(imageMode ? [{
-        label: "Distribución",
-        value: `${imagesPerPage} imagen${imagesPerPage !== 1 ? "es" : ""} por hoja`,
-      }] : []),
-      { label: "Tipo", value: formValues.printType === "bw" ? "Blanco y Negro" : "Color" },
-      { label: "Páginas", value: printRangeLabel },
-      { label: "Copias", value: String(formValues.copyCount) },
-      { label: "Precio por página", value: formatCurrency(pricePerPage) },
+      { label: "Tipo de archivo", value: fileTypeLabel },
+      { label: "Formato",         value: `${PAPER_LABEL} (${PAPER_DESC})` },
+      ...(imageMode ? [{ label: "Distribución", value: `${imagesPerPage} imagen${imagesPerPage !== 1 ? "es" : ""} por hoja` }] : []),
+      { label: "Tipo",            value: formValues.printType === "bw" ? "Blanco y Negro" : "Color" },
+      { label: pptxMode ? "Diapositivas" : "Páginas", value: rangeLabel },
+      ...(pptxMode ? [{ label: "Por hoja", value: `${slidesPerPage} diapositiva${slidesPerPage !== 1 ? "s" : ""}` }] : []),
+      { label: "Hojas a imprimir", value: wordMode ? "Según documento" : String(effectivePageCount) },
+      { label: "Copias",           value: String(formValues.copyCount) },
+      { label: "Precio por hoja",  value: formatCurrency(pricePerPage) },
     ];
 
     return (
@@ -1172,8 +1313,8 @@ export function PrintForm({
                   className="overflow-hidden rounded-xl border border-gray-200 shadow-sm transition-all duration-300"
                   style={{
                     maxHeight: 180,
-                    width: pdfMode
-                      ? Math.round(180 * (PAPER[targetPaperSize].w / PAPER[targetPaperSize].h))
+                    width: (pdfMode || imageMode)
+                      ? Math.round(180 * (PAPER_W / PAPER_H))
                       : "auto",
                   }}
                 >
@@ -1195,10 +1336,12 @@ export function PrintForm({
                   </dd>
                 </div>
               ))}
-              <div className="flex justify-between border-t border-gray-100 pt-3 text-base">
-                <dt className="font-semibold text-gray-900">Total a pagar</dt>
-                <dd className="font-bold text-blue-600">{formatCurrency(estimatedTotal)}</dd>
-              </div>
+              {!wordMode && (
+                <div className="flex justify-between border-t border-gray-100 pt-3 text-base">
+                  <dt className="font-semibold text-gray-900">Total a pagar</dt>
+                  <dd className="font-bold text-blue-600">{formatCurrency(estimatedTotal)}</dd>
+                </div>
+              )}
             </dl>
 
             {imageMode && previewPages && (
@@ -1213,11 +1356,11 @@ export function PrintForm({
             )}
           </Card>
 
-          {effectivePageCount * formValues.copyCount > maxPagesNoApproval && (
+          {!wordMode && effectivePageCount * formValues.copyCount > maxPagesNoApproval && (
             <div className="rounded-xl border border-yellow-200 bg-yellow-50 p-4">
               <p className="flex items-start gap-2 text-sm text-yellow-800">
                 <AlertCircle className="mt-0.5 h-4 w-4 flex-shrink-0" />
-                El total a imprimir ({effectivePageCount} págs × {formValues.copyCount}{" "}
+                El total ({effectivePageCount} hojas × {formValues.copyCount}{" "}
                 {formValues.copyCount === 1 ? "copia" : "copias"} ={" "}
                 {effectivePageCount * formValues.copyCount} hojas) supera el límite de{" "}
                 {maxPagesNoApproval} y requiere aprobación del administrador.
@@ -1232,7 +1375,12 @@ export function PrintForm({
           )}
 
           <div className="flex gap-3">
-            <Button variant="outline" className="flex-1" onClick={() => setStep("form")} disabled={isSubmitting}>
+            <Button
+              variant="outline"
+              className="flex-1"
+              onClick={() => setStep("form")}
+              disabled={isSubmitting}
+            >
               Editar
             </Button>
             <Button className="flex-1" onClick={confirmAndSubmit} loading={isSubmitting}>
@@ -1244,7 +1392,7 @@ export function PrintForm({
     );
   }
 
-  // ── PASO 3: Éxito ──────────────────────────────────────
+  // ── PASO 3: Éxito ──────────────────────────────────────────
 
   if (step === "success" && successData) {
     return (

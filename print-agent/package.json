@@ -17,6 +17,7 @@
   "dependencies": {
     "@supabase/supabase-js": "^2.48.1",
     "dotenv": "^16.4.7",
+    "pdf-lib": "^1.17.1",
     "pdf-to-printer": "^5.1.2"
   }
 }
