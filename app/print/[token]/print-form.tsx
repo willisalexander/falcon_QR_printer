@@ -28,13 +28,16 @@ const LAYOUT_OPTIONS = [
 
 type LayoutValue = (typeof LAYOUT_OPTIONS)[number]["value"];
 
-// ── Tamaño de papel fijo: Oficio 2 ────────────────────────────
-const PAPER_W     = 612;        // 8.5" × 72 pts
-const PAPER_H     = 936;        // 13" × 72 pts
-const PAPER_LABEL = "Oficio 2";
-const PAPER_DESC  = "8.5 × 13 in";
+// ── Tamaños de papel ───────────────────────────────────────────
 
-// ── Diapositivas por hoja (solo PowerPoint) ───────────────────
+type PaperSize = "carta" | "oficio2";
+
+const PAPER: Record<PaperSize, { w: number; h: number; label: string; desc: string }> = {
+  carta:   { w: 612, h: 792,  label: "Carta",   desc: "8.5 × 11 in" },
+  oficio2: { w: 612, h: 936,  label: "Oficio 2", desc: "8.5 × 13 in" },
+};
+
+// ── Diapositivas por hoja (PowerPoint) ────────────────────────
 
 const SLIDES_PER_PAGE_OPTIONS = [1, 2, 3, 4, 6, 9] as const;
 type SlidesPerPage = (typeof SLIDES_PER_PAGE_OPTIONS)[number];
@@ -57,28 +60,35 @@ function isPdfFile(file: File) {
 }
 
 function isWordFile(file: File) {
-  const name = file.name.toLowerCase();
+  const n = file.name.toLowerCase();
   return (
     file.type === "application/vnd.openxmlformats-officedocument.wordprocessingml.document" ||
     file.type === "application/msword" ||
-    name.endsWith(".docx") ||
-    name.endsWith(".doc")
+    n.endsWith(".docx") || n.endsWith(".doc")
   );
 }
 
 function isPptxFile(file: File) {
-  const name = file.name.toLowerCase();
+  const n = file.name.toLowerCase();
   return (
     file.type === "application/vnd.openxmlformats-officedocument.presentationml.presentation" ||
     file.type === "application/vnd.ms-powerpoint" ||
-    name.endsWith(".pptx") ||
-    name.endsWith(".ppt")
+    n.endsWith(".pptx") || n.endsWith(".ppt")
   );
 }
 
 function isImageFile(file: File) {
   return ["image/jpeg", "image/jpg", "image/png", "image/webp"].includes(file.type) ||
     /\.(jpe?g|png|webp)$/i.test(file.name);
+}
+
+// Detecta el tamaño del PDF en puntos y lo mapea a PaperSize
+function detectPaperSize(widthPts: number, heightPts: number): PaperSize | "otro" {
+  const w = Math.min(widthPts, heightPts);
+  const h = Math.max(widthPts, heightPts);
+  if (Math.abs(w - 612) <= 12 && Math.abs(h - 792) <= 12)  return "carta";
+  if (Math.abs(w - 612) <= 12 && Math.abs(h - 936) <= 12)  return "oficio2";
+  return "otro";
 }
 
 // ── Helpers de imagen ─────────────────────────────────────────
@@ -98,8 +108,7 @@ async function generateImageThumbnail(file: File, maxWidth = 400): Promise<Blob>
       ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
       canvas.toBlob(
         (blob) => (blob ? resolve(blob) : reject(new Error("Error al generar miniatura"))),
-        "image/jpeg",
-        0.82
+        "image/jpeg", 0.82
       );
     };
     img.onerror = () => { URL.revokeObjectURL(url); reject(new Error("Error al cargar imagen")); };
@@ -123,8 +132,7 @@ async function imageFileToJpegBytes(file: File, maxPx = 1600): Promise<ArrayBuff
       canvas.toBlob(
         async (blob) =>
           blob ? resolve(await blob.arrayBuffer()) : reject(new Error("Error de conversión")),
-        "image/jpeg",
-        0.82
+        "image/jpeg", 0.82
       );
     };
     img.onerror = () => { URL.revokeObjectURL(url); reject(new Error("Error al cargar imagen")); };
@@ -132,35 +140,41 @@ async function imageFileToJpegBytes(file: File, maxPx = 1600): Promise<ArrayBuff
   });
 }
 
-async function imageArrayToPdf(files: File[], imagesPerPage: LayoutValue): Promise<Blob> {
+// Convierte imágenes a PDF usando el tamaño de papel seleccionado
+async function imageArrayToPdf(
+  files: File[],
+  imagesPerPage: LayoutValue,
+  paperW: number,
+  paperH: number
+): Promise<Blob> {
   const layout = LAYOUT_OPTIONS.find((l) => l.value === imagesPerPage) ?? LAYOUT_OPTIONS[0];
   const { PDFDocument } = await import("pdf-lib");
   const pdfDoc = await PDFDocument.create();
 
   const MARGIN = 20, GAP = 8;
   const { cols, rows } = layout;
-  const cellW = (PAPER_W - MARGIN * 2 - GAP * (cols - 1)) / cols;
-  const cellH = (PAPER_H - MARGIN * 2 - GAP * (rows - 1)) / rows;
-
-  const cellPxW = Math.round(cellW * (150 / 72));
-  const cellPxH = Math.round(cellH * (150 / 72));
-  const maxPx   = Math.max(cellPxW, cellPxH);
+  const cellW = (paperW - MARGIN * 2 - GAP * (cols - 1)) / cols;
+  const cellH = (paperH - MARGIN * 2 - GAP * (rows - 1)) / rows;
+  const maxPx = Math.max(
+    Math.round(cellW * (150 / 72)),
+    Math.round(cellH * (150 / 72))
+  );
 
   for (let pageIdx = 0; pageIdx < Math.ceil(files.length / imagesPerPage); pageIdx++) {
-    const page  = pdfDoc.addPage([PAPER_W, PAPER_H]);
+    const page  = pdfDoc.addPage([paperW, paperH]);
     const batch = files.slice(pageIdx * imagesPerPage, (pageIdx + 1) * imagesPerPage);
 
     for (let i = 0; i < batch.length; i++) {
-      const col      = i % cols;
-      const row      = Math.floor(i / cols);
+      const col  = i % cols;
+      const row  = Math.floor(i / cols);
       const imgBytes = await imageFileToJpegBytes(batch[i], maxPx);
-      const img      = await pdfDoc.embedJpg(imgBytes);
+      const img  = await pdfDoc.embedJpg(imgBytes);
 
-      const scale  = Math.min(cellW / img.width, cellH / img.height);
-      const drawW  = img.width  * scale;
-      const drawH  = img.height * scale;
-      const x      = MARGIN + col * (cellW + GAP) + (cellW - drawW) / 2;
-      const y      = PAPER_H - MARGIN - (row + 1) * cellH - row * GAP + (cellH - drawH) / 2;
+      const scale = Math.min(cellW / img.width, cellH / img.height);
+      const drawW = img.width  * scale;
+      const drawH = img.height * scale;
+      const x     = MARGIN + col * (cellW + GAP) + (cellW - drawW) / 2;
+      const y     = paperH - MARGIN - (row + 1) * cellH - row * GAP + (cellH - drawH) / 2;
 
       page.drawImage(img, { x, y, width: drawW, height: drawH });
     }
@@ -170,22 +184,25 @@ async function imageArrayToPdf(files: File[], imagesPerPage: LayoutValue): Promi
   return new Blob([new Uint8Array(bytes)], { type: "application/pdf" });
 }
 
-async function generateLayoutPreview(files: File[], imagesPerPage: LayoutValue): Promise<string[]> {
+// Preview canvas con proporción del papel seleccionado
+async function generateLayoutPreview(
+  files: File[],
+  imagesPerPage: LayoutValue,
+  paperW: number,
+  paperH: number
+): Promise<string[]> {
   const layout = LAYOUT_OPTIONS.find((l) => l.value === imagesPerPage) ?? LAYOUT_OPTIONS[0];
   const { cols, rows } = layout;
 
   const CANVAS_W = 560;
-  const CANVAS_H = Math.round(560 * (PAPER_H / PAPER_W)); // proporción Oficio 2
-  const MARGIN   = 16;
-  const GAP      = 6;
+  const CANVAS_H = Math.round(560 * (paperH / paperW));
+  const MARGIN   = 16, GAP = 6;
+  const cellW    = (CANVAS_W - MARGIN * 2 - GAP * (cols - 1)) / cols;
+  const cellH    = (CANVAS_H - MARGIN * 2 - GAP * (rows - 1)) / rows;
 
-  const cellW = (CANVAS_W - MARGIN * 2 - GAP * (cols - 1)) / cols;
-  const cellH = (CANVAS_H - MARGIN * 2 - GAP * (rows - 1)) / rows;
-
-  const totalPages = Math.ceil(files.length / imagesPerPage);
   const previews: string[] = [];
 
-  for (let pageIdx = 0; pageIdx < totalPages; pageIdx++) {
+  for (let pageIdx = 0; pageIdx < Math.ceil(files.length / imagesPerPage); pageIdx++) {
     const canvas = document.createElement("canvas");
     canvas.width  = CANVAS_W;
     canvas.height = CANVAS_H;
@@ -229,20 +246,17 @@ async function generateLayoutPreview(files: File[], imagesPerPage: LayoutValue):
   return previews;
 }
 
-// ── Helper para contar diapositivas de PPTX ───────────────────
+// ── Helper para contar diapositivas PPTX ──────────────────────
 
 async function getPptxSlideCount(file: File): Promise<number> {
   try {
-    const buffer  = await file.arrayBuffer();
-    const text    = new TextDecoder("latin1").decode(new Uint8Array(buffer));
+    const text    = new TextDecoder("latin1").decode(new Uint8Array(await file.arrayBuffer()));
     const pattern = /ppt\/slides\/slide(\d+)\.xml/g;
     const nums    = new Set<number>();
     let m;
     while ((m = pattern.exec(text)) !== null) nums.add(parseInt(m[1]));
     return nums.size > 0 ? nums.size : 1;
-  } catch {
-    return 1;
-  }
+  } catch { return 1; }
 }
 
 async function generatePdfThumbnail(file: File, maxWidth = 400): Promise<Blob> {
@@ -250,13 +264,11 @@ async function generatePdfThumbnail(file: File, maxWidth = 400): Promise<Blob> {
   pdfjsLib.GlobalWorkerOptions.workerSrc =
     `https://unpkg.com/pdfjs-dist@${pdfjsLib.version}/build/pdf.worker.min.mjs`;
 
-  const arrayBuffer = await file.arrayBuffer();
-  const pdf  = await pdfjsLib.getDocument({ data: new Uint8Array(arrayBuffer) }).promise;
+  const pdf  = await pdfjsLib.getDocument({ data: new Uint8Array(await file.arrayBuffer()) }).promise;
   const page = await pdf.getPage(1);
 
   const baseViewport = page.getViewport({ scale: 1 });
-  const scale        = maxWidth / baseViewport.width;
-  const viewport     = page.getViewport({ scale });
+  const viewport     = page.getViewport({ scale: maxWidth / baseViewport.width });
 
   const canvas = document.createElement("canvas");
   canvas.width  = Math.round(viewport.width);
@@ -266,23 +278,19 @@ async function generatePdfThumbnail(file: File, maxWidth = 400): Promise<Blob> {
   ctx.fillRect(0, 0, canvas.width, canvas.height);
   await page.render({ canvas, viewport }).promise;
 
-  return new Promise<Blob>((resolve, reject) => {
+  return new Promise<Blob>((resolve, reject) =>
     canvas.toBlob(
-      (blob) => (blob ? resolve(blob) : reject(new Error("Error al generar miniatura del PDF"))),
-      "image/jpeg",
-      0.85
-    );
-  });
+      (b) => (b ? resolve(b) : reject(new Error("Error al generar miniatura"))),
+      "image/jpeg", 0.85
+    )
+  );
 }
 
 // ── Tipos y schema ─────────────────────────────────────────────
 
 interface PrintFormProps {
-  qrTokenId:          string;
-  priceBw:            number;
-  priceColor:         number;
-  maxPagesNoApproval: number;
-  maxFileSizeMb:      number;
+  qrTokenId: string; priceBw: number; priceColor: number;
+  maxPagesNoApproval: number; maxFileSizeMb: number;
 }
 
 const printSchema = z.object({
@@ -294,11 +302,7 @@ const printSchema = z.object({
 type PrintFormData = z.infer<typeof printSchema>;
 type Step = "form" | "summary" | "success";
 
-interface SuccessData {
-  correlative: string;
-  totalPrice:  number;
-  clientName:  string;
-}
+interface SuccessData { correlative: string; totalPrice: number; clientName: string; }
 
 // ── Componente ─────────────────────────────────────────────────
 
@@ -319,6 +323,10 @@ export function PrintForm({
   const [convertedPdf, setConvertedPdf] = useState<Blob | null>(null);
   const [thumbnailBlob,setThumbnailBlob] = useState<Blob | null>(null);
   const [thumbnailUrl, setThumbnailUrl] = useState<string | null>(null);
+
+  // Tamaño de papel
+  const [detectedPaperSize, setDetectedPaperSize] = useState<PaperSize | "otro" | null>(null);
+  const [targetPaperSize,   setTargetPaperSize   ] = useState<PaperSize>("carta");
 
   // Rango de impresión (PDF y PPTX)
   const [printRange,      setPrintRange     ] = useState<PrintRange>("all");
@@ -346,13 +354,11 @@ export function PrintForm({
   const wordMode  = files.length > 0 && isWordFile(files[0]);
   const pptxMode  = files.length > 0 && isPptxFile(files[0]);
 
-  // Páginas/diapositivas efectivas según el rango
   const rawEffectiveCount =
     printRange === "all"    ? pageCount :
     printRange === "single" ? 1 :
     Math.max(1, Math.min(rangeTo, pageCount) - Math.max(1, rangeFrom) + 1);
 
-  // Para PPTX las hojas físicas se reducen según diapositivas por hoja
   const effectivePageCount = pptxMode
     ? Math.ceil(rawEffectiveCount / slidesPerPage)
     : rawEffectiveCount;
@@ -360,8 +366,9 @@ export function PrintForm({
   const estimatedTotal =
     Math.round(pricePerPage * effectivePageCount * currentCopyCount * 100) / 100;
 
-  // Altura del contenedor de miniatura (proporción Oficio 2)
-  const thumbContainerHeight = Math.round(120 * (PAPER_H / PAPER_W)); // ≈ 184 px
+  // Altura del contenedor de miniatura según el tamaño seleccionado
+  const thumbContainerHeight =
+    Math.round(120 * (PAPER[targetPaperSize].h / PAPER[targetPaperSize].w));
 
   // URL de miniatura
   useEffect(() => {
@@ -371,13 +378,13 @@ export function PrintForm({
     return () => URL.revokeObjectURL(url);
   }, [thumbnailBlob]);
 
-  // Invalidar preview cacheada al cambiar archivo o layout
+  // Invalidar preview al cambiar archivo, layout o tamaño de papel
   useEffect(() => {
     setPreviewPages(null);
     setPreviewPageIdx(0);
-  }, [files, imagesPerPage]);
+  }, [files, imagesPerPage, targetPaperSize]);
 
-  // Conversión imágenes → PDF (en Oficio 2)
+  // Conversión imágenes → PDF cuando cambia archivo, layout o tamaño de papel
   useEffect(() => {
     if (files.length === 0 || !isImageFile(files[0])) return;
 
@@ -386,11 +393,13 @@ export function PrintForm({
     setConvertedPdf(null);
     setFileError(null);
 
+    const { w: pW, h: pH } = PAPER[targetPaperSize];
+
     (async () => {
       try {
         const [thumb, pdf] = await Promise.all([
           generateImageThumbnail(files[0], 400),
-          imageArrayToPdf(files, imagesPerPage),
+          imageArrayToPdf(files, imagesPerPage, pW, pH),
         ]);
         if (cancelled) return;
         setThumbnailBlob(thumb);
@@ -406,7 +415,7 @@ export function PrintForm({
     })();
 
     return () => { cancelled = true; };
-  }, [files, imagesPerPage]);
+  }, [files, imagesPerPage, targetPaperSize]);
 
   // ── Manejo de archivo ──────────────────────────────────────
 
@@ -417,6 +426,8 @@ export function PrintForm({
     setFileError(null);
     setConvertedPdf(null);
     setThumbnailBlob(null);
+    setDetectedPaperSize(null);
+    setTargetPaperSize("carta");
     setPrintRange("all");
     setRangeSinglePage(1);
     setRangeFrom(1);
@@ -445,9 +456,8 @@ export function PrintForm({
       }
     }
 
-    // Solo se puede mezclar un tipo a la vez
-    const hasDoc  = selected.some((f) => isPdfFile(f) || isWordFile(f) || isPptxFile(f));
-    const hasImg  = selected.some(isImageFile);
+    const hasDoc = selected.some((f) => isPdfFile(f) || isWordFile(f) || isPptxFile(f));
+    const hasImg = selected.some(isImageFile);
     if (hasDoc && hasImg) {
       setFileError("No puedes mezclar documentos e imágenes. Selecciona solo uno de cada tipo.");
       return;
@@ -466,9 +476,13 @@ export function PrintForm({
       setIsConverting(true);
       try {
         const { PDFDocument } = await import("pdf-lib");
-        const bytes = await pdfFile.arrayBuffer();
-        const doc   = await PDFDocument.load(bytes);
+        const doc   = await PDFDocument.load(await pdfFile.arrayBuffer());
         const count = doc.getPageCount();
+        const { width, height } = doc.getPage(0).getSize();
+
+        const detected = detectPaperSize(width, height);
+        setDetectedPaperSize(detected);
+        setTargetPaperSize(detected === "otro" ? "carta" : detected);
         setPageCount(count);
         setRangeTo(count);
         try {
@@ -499,7 +513,6 @@ export function PrintForm({
       setPageCount(1);
       setRangeTo(1);
     } else {
-      // Imágenes
       setImagesPerPage(1);
       setFiles(selected);
     }
@@ -514,6 +527,8 @@ export function PrintForm({
     setConvertedPdf(null);
     setThumbnailBlob(null);
     setPreviewPages(null);
+    setDetectedPaperSize(null);
+    setTargetPaperSize("carta");
     setPrintRange("all");
     setRangeSinglePage(1);
     setRangeFrom(1);
@@ -525,7 +540,8 @@ export function PrintForm({
     if (previewPages) return;
     setIsGeneratingPreview(true);
     try {
-      const pages = await generateLayoutPreview(files, imagesPerPage);
+      const { w, h } = PAPER[targetPaperSize];
+      const pages = await generateLayoutPreview(files, imagesPerPage, w, h);
       setPreviewPages(pages);
     } catch { /* no crítico */ } finally {
       setIsGeneratingPreview(false);
@@ -561,26 +577,20 @@ export function PrintForm({
     let thumbnailPath: string | null = null;
 
     try {
-      const supabase     = createClient();
-      const fileToUpload = imageMode ? convertedPdf : files[0];
-      if (!fileToUpload) throw new Error("El archivo no está listo. Espera unos segundos.");
-
-      // Extensión y content type según tipo de archivo
-      let ext         = "pdf";
-      let contentType = "application/pdf";
+      const supabase = createClient();
 
       if (imageMode) {
-        const name = files.length === 1
-          ? files[0].name.replace(/\.[^.]+$/, ".pdf")
-          : `${files.length}_imagenes.pdf`;
-        ext = "pdf";
+        const fileToUpload = convertedPdf;
+        if (!fileToUpload) throw new Error("El archivo no está listo. Espera unos segundos.");
         filePath = `jobs/${Date.now()}-${Math.random().toString(36).slice(2)}.pdf`;
-        const { error: uploadError } = await supabase.storage
+        const { error } = await supabase.storage
           .from("print-files")
           .upload(filePath, fileToUpload, { contentType: "application/pdf", upsert: false });
-        if (uploadError) throw new Error("Error al subir el archivo: " + uploadError.message);
+        if (error) throw new Error("Error al subir el archivo: " + error.message);
       } else {
-        ext = files[0].name.split(".").pop()?.toLowerCase() ?? "pdf";
+        const file = files[0];
+        const ext  = file.name.split(".").pop()?.toLowerCase() ?? "pdf";
+        let contentType = "application/pdf";
         if (wordMode) {
           contentType = ext === "doc"
             ? "application/msword"
@@ -591,18 +601,18 @@ export function PrintForm({
             : "application/vnd.openxmlformats-officedocument.presentationml.presentation";
         }
         filePath = `jobs/${Date.now()}-${Math.random().toString(36).slice(2)}.${ext}`;
-        const { error: uploadError } = await supabase.storage
+        const { error } = await supabase.storage
           .from("print-files")
-          .upload(filePath, files[0], { contentType, upsert: false });
-        if (uploadError) throw new Error("Error al subir el archivo: " + uploadError.message);
+          .upload(filePath, file, { contentType, upsert: false });
+        if (error) throw new Error("Error al subir el archivo: " + error.message);
       }
 
       if (thumbnailBlob) {
         const tp = `jobs/${Date.now()}-${Math.random().toString(36).slice(2)}.jpg`;
-        const { error: thumbErr } = await supabase.storage
+        const { error } = await supabase.storage
           .from("thumbnails")
           .upload(tp, thumbnailBlob, { contentType: "image/jpeg", upsert: false });
-        if (!thumbErr) thumbnailPath = tp;
+        if (!error) thumbnailPath = tp;
       }
 
       const finalName = imageMode
@@ -617,14 +627,14 @@ export function PrintForm({
         printType:        formValues.printType,
         pageCount:        effectivePageCount,
         copyCount:        formValues.copyCount,
-        filePath,
+        filePath:         filePath!,
         originalFileName: finalName,
         thumbnailPath:    thumbnailPath ?? undefined,
         slidesPerPage:    pptxMode ? slidesPerPage : undefined,
       });
 
       if (!result.success) {
-        await supabase.storage.from("print-files").remove([filePath]);
+        await supabase.storage.from("print-files").remove([filePath!]);
         if (thumbnailPath)
           await supabase.storage.from("thumbnails").remove([thumbnailPath]);
         throw new Error(result.error);
@@ -643,13 +653,10 @@ export function PrintForm({
     }
   }
 
-  // ── Modal de vista previa (imágenes) ──────────────────────
+  // ── Modal de vista previa ──────────────────────────────────
 
   const previewModal = showPreview && (
-    <div
-      className="fixed inset-0 z-50 flex flex-col bg-black/80"
-      onClick={() => setShowPreview(false)}
-    >
+    <div className="fixed inset-0 z-50 flex flex-col bg-black/80" onClick={() => setShowPreview(false)}>
       <div className="flex flex-1 flex-col overflow-hidden" onClick={(e) => e.stopPropagation()}>
         <div className="flex items-center justify-between bg-black/60 px-4 py-3">
           <p className="text-sm font-semibold text-white">Vista previa del documento</p>
@@ -659,11 +666,8 @@ export function PrintForm({
                 Hoja {previewPageIdx + 1} / {previewPages.length}
               </span>
             )}
-            <button
-              type="button"
-              onClick={() => setShowPreview(false)}
-              className="rounded-lg p-1.5 text-gray-300 hover:bg-white/10 active:bg-white/20"
-            >
+            <button type="button" onClick={() => setShowPreview(false)}
+              className="rounded-lg p-1.5 text-gray-300 hover:bg-white/10 active:bg-white/20">
               <X className="h-5 w-5" />
             </button>
           </div>
@@ -676,12 +680,9 @@ export function PrintForm({
               <p className="text-sm">Generando vista previa…</p>
             </div>
           ) : previewPages && previewPages[previewPageIdx] ? (
-            <img
-              src={previewPages[previewPageIdx]}
-              alt={`Hoja ${previewPageIdx + 1}`}
+            <img src={previewPages[previewPageIdx]} alt={`Hoja ${previewPageIdx + 1}`}
               className="max-h-full max-w-full rounded-lg object-contain shadow-2xl"
-              style={{ maxHeight: "calc(100vh - 140px)" }}
-            />
+              style={{ maxHeight: "calc(100vh - 140px)" }} />
           ) : (
             <p className="text-sm text-gray-400">No se pudo generar la previsualización.</p>
           )}
@@ -689,47 +690,92 @@ export function PrintForm({
 
         {previewPages && previewPages.length > 1 && (
           <div className="flex items-center justify-center gap-4 bg-black/60 py-3">
-            <button
-              type="button"
-              disabled={previewPageIdx === 0}
+            <button type="button" disabled={previewPageIdx === 0}
               onClick={() => setPreviewPageIdx((p) => p - 1)}
-              className="flex h-9 w-9 items-center justify-center rounded-full bg-white/10 text-white disabled:opacity-30 active:bg-white/20"
-            >
+              className="flex h-9 w-9 items-center justify-center rounded-full bg-white/10 text-white disabled:opacity-30 active:bg-white/20">
               <ChevronLeft className="h-5 w-5" />
             </button>
             <div className="flex gap-1.5">
               {previewPages.map((_, i) => (
-                <button
-                  key={i}
-                  type="button"
-                  onClick={() => setPreviewPageIdx(i)}
-                  className={cn(
-                    "h-2 rounded-full transition-all",
-                    i === previewPageIdx ? "w-6 bg-white" : "w-2 bg-white/40"
-                  )}
-                />
+                <button key={i} type="button" onClick={() => setPreviewPageIdx(i)}
+                  className={cn("h-2 rounded-full transition-all",
+                    i === previewPageIdx ? "w-6 bg-white" : "w-2 bg-white/40")} />
               ))}
             </div>
-            <button
-              type="button"
-              disabled={previewPageIdx === previewPages.length - 1}
+            <button type="button" disabled={previewPageIdx === previewPages.length - 1}
               onClick={() => setPreviewPageIdx((p) => p + 1)}
-              className="flex h-9 w-9 items-center justify-center rounded-full bg-white/10 text-white disabled:opacity-30 active:bg-white/20"
-            >
+              className="flex h-9 w-9 items-center justify-center rounded-full bg-white/10 text-white disabled:opacity-30 active:bg-white/20">
               <ChevronRight className="h-5 w-5" />
             </button>
           </div>
         )}
 
         <div className="bg-black/60 px-4 pb-5 pt-2">
-          <button
-            type="button"
-            onClick={() => setShowPreview(false)}
-            className="w-full rounded-xl bg-white/10 py-2.5 text-sm font-semibold text-white active:bg-white/20"
-          >
+          <button type="button" onClick={() => setShowPreview(false)}
+            className="w-full rounded-xl bg-white/10 py-2.5 text-sm font-semibold text-white active:bg-white/20">
             Cerrar previa
           </button>
         </div>
+      </div>
+    </div>
+  );
+
+  // ── Selector de tamaño de papel (reutilizable) ─────────────
+
+  const paperSizeSelector = files.length > 0 && !isConverting && (
+    <div className="mt-4">
+      {/* Tamaño detectado solo para PDF */}
+      {pdfMode && detectedPaperSize !== null && (
+        <p className="mb-2 text-xs text-gray-500">
+          Tamaño detectado:{" "}
+          <span className="font-semibold text-gray-700">
+            {detectedPaperSize === "otro"
+              ? "Formato personalizado"
+              : `${PAPER[detectedPaperSize].label} (${PAPER[detectedPaperSize].desc})`}
+          </span>
+        </p>
+      )}
+
+      <p className="mb-2 text-xs font-medium text-gray-600">Imprimir en formato</p>
+      <div className="flex gap-2">
+        {(["carta", "oficio2"] as PaperSize[]).map((size) => (
+          <button
+            key={size}
+            type="button"
+            onClick={() => setTargetPaperSize(size)}
+            className={cn(
+              "flex flex-1 flex-col items-center gap-1.5 rounded-xl border-2 py-3 px-2 transition-colors",
+              targetPaperSize === size
+                ? "border-blue-500 bg-blue-50"
+                : "border-gray-200 bg-white"
+            )}
+          >
+            <div
+              className={cn(
+                "rounded-sm border-2 transition-all",
+                targetPaperSize === size
+                  ? "border-blue-400 bg-blue-100"
+                  : "border-gray-300 bg-gray-50"
+              )}
+              style={{
+                width: 24,
+                height: size === "carta" ? 31 : 37,
+              }}
+            />
+            <span className={cn(
+              "text-xs font-semibold",
+              targetPaperSize === size ? "text-blue-700" : "text-gray-600"
+            )}>
+              {PAPER[size].label}
+            </span>
+            <span className={cn(
+              "text-[10px]",
+              targetPaperSize === size ? "text-blue-500" : "text-gray-400"
+            )}>
+              {PAPER[size].desc}
+            </span>
+          </button>
+        ))}
       </div>
     </div>
   );
@@ -793,11 +839,8 @@ export function PrintForm({
                     </div>
                   ) : thumbnailUrl ? (
                     <div className="relative flex-shrink-0">
-                      <img
-                        src={thumbnailUrl}
-                        alt="Vista previa"
-                        className="h-14 w-14 rounded-lg object-cover border border-gray-200"
-                      />
+                      <img src={thumbnailUrl} alt="Vista previa"
+                        className="h-14 w-14 rounded-lg object-cover border border-gray-200" />
                       {files.length > 1 && (
                         <span className="absolute -top-1.5 -right-1.5 flex h-5 min-w-[20px] items-center justify-center rounded-full bg-blue-600 px-1 text-xs font-bold text-white">
                           {files.length}
@@ -810,9 +853,7 @@ export function PrintForm({
 
                   <div className="flex-1 min-w-0">
                     <p className="truncate text-sm font-medium text-gray-900">
-                      {files.length === 1
-                        ? files[0].name
-                        : `${files.length} imágenes seleccionadas`}
+                      {files.length === 1 ? files[0].name : `${files.length} imágenes seleccionadas`}
                     </p>
                     <p className="text-xs text-gray-500">
                       {isConverting ? "Procesando archivo…" : (
@@ -827,70 +868,35 @@ export function PrintForm({
                     </p>
                   </div>
 
-                  <button
-                    type="button"
-                    onClick={clearFiles}
-                    disabled={isConverting}
-                    className="rounded-lg p-2 text-gray-400 active:bg-gray-100 disabled:opacity-40"
-                  >
+                  <button type="button" onClick={clearFiles} disabled={isConverting}
+                    className="rounded-lg p-2 text-gray-400 active:bg-gray-100 disabled:opacity-40">
                     <X className="h-5 w-5" />
                   </button>
                 </div>
 
-                {/* Info para PDF */}
-                {pdfMode && !isConverting && (
-                  <div className="mt-4 space-y-3">
+                {/* Selector de tamaño de papel — siempre visible cuando hay archivo */}
+                {paperSizeSelector}
+
+                {/* Miniatura PDF en el formato seleccionado */}
+                {pdfMode && !isConverting && thumbnailUrl && (
+                  <div className="mt-3 flex flex-col items-center gap-1.5">
                     <p className="text-xs text-gray-500">
-                      Se imprimirá en formato{" "}
-                      <span className="font-semibold text-gray-700">
-                        {PAPER_LABEL} ({PAPER_DESC})
-                      </span>
+                      Vista en formato {PAPER[targetPaperSize].label}
                     </p>
-                    {thumbnailUrl && (
-                      <div className="flex flex-col items-center gap-1.5">
-                        <p className="text-xs text-gray-500">Vista previa (primera página)</p>
-                        <div
-                          className="overflow-hidden rounded-lg border-2 border-gray-300 bg-white shadow-sm"
-                          style={{ width: 120, height: thumbContainerHeight }}
-                        >
-                          <img
-                            src={thumbnailUrl}
-                            alt="Vista previa"
-                            className="h-full w-full object-contain"
-                          />
-                        </div>
-                      </div>
-                    )}
+                    <div
+                      className="overflow-hidden rounded-lg border-2 border-gray-300 bg-white shadow-sm transition-all duration-300"
+                      style={{ width: 120, height: thumbContainerHeight }}
+                    >
+                      <img src={thumbnailUrl} alt="Vista previa"
+                        className="h-full w-full object-contain" />
+                    </div>
                   </div>
-                )}
-
-                {/* Info para PPTX */}
-                {pptxMode && !isConverting && (
-                  <p className="mt-3 text-xs text-gray-500">
-                    Se imprimirá en formato{" "}
-                    <span className="font-semibold text-gray-700">
-                      {PAPER_LABEL} ({PAPER_DESC})
-                    </span>
-                  </p>
-                )}
-
-                {/* Info para Word */}
-                {wordMode && (
-                  <p className="mt-3 text-xs text-gray-500">
-                    Se imprimirá en formato{" "}
-                    <span className="font-semibold text-gray-700">
-                      {PAPER_LABEL} ({PAPER_DESC})
-                    </span>
-                    . El precio final depende del número real de páginas.
-                  </p>
                 )}
 
                 {/* Selector de layout — solo imágenes */}
                 {imageMode && (
                   <div className="mt-3">
-                    <p className="mb-2 text-xs font-medium text-gray-600">
-                      Imágenes por hoja
-                    </p>
+                    <p className="mb-2 text-xs font-medium text-gray-600">Imágenes por hoja</p>
                     <div className="flex flex-wrap gap-2">
                       {LAYOUT_OPTIONS.map((opt) => (
                         <button
@@ -912,21 +918,15 @@ export function PrintForm({
                               gridTemplateRows:    `repeat(${opt.rows}, 1fr)`,
                               width: opt.cols >= 4 ? 36 : 28,
                               height: 36,
-                              gap: "2px",
-                              padding: "2px",
-                              backgroundColor: "#d1d5db",
-                              borderRadius: 3,
+                              gap: "2px", padding: "2px",
+                              backgroundColor: "#d1d5db", borderRadius: 3,
                             }}
                           >
                             {Array.from({ length: opt.value }).map((_, i) => (
-                              <div
-                                key={i}
-                                style={{
-                                  backgroundColor:
-                                    imagesPerPage === opt.value ? "#60a5fa" : "#f3f4f6",
-                                  borderRadius: 1,
-                                }}
-                              />
+                              <div key={i} style={{
+                                backgroundColor: imagesPerPage === opt.value ? "#60a5fa" : "#f3f4f6",
+                                borderRadius: 1,
+                              }} />
                             ))}
                           </div>
                           <span className={cn(
@@ -940,16 +940,20 @@ export function PrintForm({
                     </div>
 
                     {convertedPdf && !isConverting && (
-                      <button
-                        type="button"
-                        onClick={handleShowPreview}
-                        className="mt-3 flex w-full items-center justify-center gap-2 rounded-xl border border-blue-200 bg-blue-50 py-2.5 text-sm font-medium text-blue-700 active:bg-blue-100"
-                      >
+                      <button type="button" onClick={handleShowPreview}
+                        className="mt-3 flex w-full items-center justify-center gap-2 rounded-xl border border-blue-200 bg-blue-50 py-2.5 text-sm font-medium text-blue-700 active:bg-blue-100">
                         <Eye className="h-4 w-4" />
                         Ver cómo quedará el documento
                       </button>
                     )}
                   </div>
+                )}
+
+                {/* Info Word */}
+                {wordMode && (
+                  <p className="mt-3 text-xs text-gray-500">
+                    El precio final depende del número real de páginas del documento.
+                  </p>
                 )}
               </>
             )}
@@ -973,15 +977,11 @@ export function PrintForm({
                   Tipo de impresión <span className="text-red-500">*</span>
                 </p>
                 <div className="grid grid-cols-2 gap-3">
-                  {(
-                    [
-                      { value: "bw",    label: "Blanco y Negro", price: priceBw    },
-                      { value: "color", label: "Color",          price: priceColor },
-                    ] as const
-                  ).map((opt) => (
-                    <label
-                      key={opt.value}
-                      htmlFor={`type-${opt.value}`}
+                  {([
+                    { value: "bw",    label: "Blanco y Negro", price: priceBw    },
+                    { value: "color", label: "Color",          price: priceColor },
+                  ] as const).map((opt) => (
+                    <label key={opt.value} htmlFor={`type-${opt.value}`}
                       className={cn(
                         "relative flex cursor-pointer flex-col items-center rounded-xl border-2 p-4 transition-colors",
                         currentPrintType === opt.value
@@ -989,19 +989,11 @@ export function PrintForm({
                           : "border-gray-200 bg-white"
                       )}
                     >
-                      <input
-                        id={`type-${opt.value}`}
-                        type="radio"
-                        value={opt.value}
+                      <input id={`type-${opt.value}`} type="radio" value={opt.value}
                         {...register("printType")}
-                        className="absolute inset-0 h-full w-full cursor-pointer opacity-0"
-                      />
-                      <Printer
-                        className={cn(
-                          "mb-2 h-6 w-6",
-                          currentPrintType === opt.value ? "text-blue-600" : "text-gray-400"
-                        )}
-                      />
+                        className="absolute inset-0 h-full w-full cursor-pointer opacity-0" />
+                      <Printer className={cn("mb-2 h-6 w-6",
+                        currentPrintType === opt.value ? "text-blue-600" : "text-gray-400")} />
                       <span className="text-sm font-semibold text-gray-900">{opt.label}</span>
                       <span className="text-xs text-gray-500">
                         {formatCurrency(opt.price)} / hoja
@@ -1014,59 +1006,34 @@ export function PrintForm({
                 )}
               </div>
 
-              {/* Rango de páginas — PDF y PPTX con más de 1 página/diapositiva */}
+              {/* Rango — PDF y PPTX con más de 1 página/diapositiva */}
               {(pdfMode || pptxMode) && !isConverting && pageCount > 1 && (
                 <div>
                   <p className="mb-3 text-sm font-medium text-gray-700">
                     {pptxMode ? "Diapositivas a imprimir" : "Páginas a imprimir"}
                   </p>
                   <div className="space-y-2">
-                    {(
-                      [
-                        {
-                          value: "all",
-                          label: pptxMode ? "Todas las diapositivas" : "Todo el documento",
-                          extra: `${pageCount} ${pptxMode ? "diapositivas" : "páginas"}`,
-                        },
-                        {
-                          value: "single",
-                          label: pptxMode ? "Una diapositiva" : "Una página",
-                          extra: "",
-                        },
-                        {
-                          value: "range",
-                          label: pptxMode ? "Rango de diapositivas" : "Rango de páginas",
-                          extra: "",
-                        },
-                      ] as const
-                    ).map((opt) => (
-                      <label
-                        key={opt.value}
+                    {([
+                      { value: "all",    label: pptxMode ? "Todas las diapositivas" : "Todo el documento", extra: `${pageCount} ${pptxMode ? "diapositivas" : "páginas"}` },
+                      { value: "single", label: pptxMode ? "Una diapositiva" : "Una página",               extra: "" },
+                      { value: "range",  label: pptxMode ? "Rango de diapositivas" : "Rango de páginas",   extra: "" },
+                    ] as const).map((opt) => (
+                      <label key={opt.value}
                         className={cn(
                           "flex cursor-pointer items-center gap-3 rounded-xl border-2 p-3 transition-colors",
-                          printRange === opt.value
-                            ? "border-blue-500 bg-blue-50"
-                            : "border-gray-200 bg-white"
+                          printRange === opt.value ? "border-blue-500 bg-blue-50" : "border-gray-200 bg-white"
                         )}
                       >
-                        <input
-                          type="radio"
-                          name="printRange"
-                          value={opt.value}
+                        <input type="radio" name="printRange" value={opt.value}
                           checked={printRange === opt.value}
                           onChange={() => setPrintRange(opt.value)}
-                          className="accent-blue-600"
-                        />
+                          className="accent-blue-600" />
                         <div className="flex-1">
-                          <p className={cn(
-                            "text-sm font-medium",
-                            printRange === opt.value ? "text-blue-800" : "text-gray-700"
-                          )}>
+                          <p className={cn("text-sm font-medium",
+                            printRange === opt.value ? "text-blue-800" : "text-gray-700")}>
                             {opt.label}
                           </p>
-                          {opt.extra && (
-                            <p className="text-xs text-gray-400">{opt.extra}</p>
-                          )}
+                          {opt.extra && <p className="text-xs text-gray-400">{opt.extra}</p>}
                         </div>
                       </label>
                     ))}
@@ -1076,28 +1043,16 @@ export function PrintForm({
                     <div className="mt-3">
                       <Input
                         label={`Número de ${pptxMode ? "diapositiva" : "página"} (1 – ${pageCount})`}
-                        type="number"
-                        inputMode="numeric"
-                        min={1}
-                        max={pageCount}
+                        type="number" inputMode="numeric" min={1} max={pageCount}
                         value={rangeSinglePage}
-                        onChange={(e) =>
-                          setRangeSinglePage(
-                            Math.min(pageCount, Math.max(1, parseInt(e.target.value) || 1))
-                          )
-                        }
+                        onChange={(e) => setRangeSinglePage(Math.min(pageCount, Math.max(1, parseInt(e.target.value) || 1)))}
                       />
                     </div>
                   )}
 
                   {printRange === "range" && (
                     <div className="mt-3 grid grid-cols-2 gap-3">
-                      <Input
-                        label="Desde"
-                        type="number"
-                        inputMode="numeric"
-                        min={1}
-                        max={pageCount}
+                      <Input label="Desde" type="number" inputMode="numeric" min={1} max={pageCount}
                         value={rangeFrom}
                         onChange={(e) => {
                           const v = Math.min(pageCount, Math.max(1, parseInt(e.target.value) || 1));
@@ -1105,18 +1060,9 @@ export function PrintForm({
                           if (v > rangeTo) setRangeTo(v);
                         }}
                       />
-                      <Input
-                        label="Hasta"
-                        type="number"
-                        inputMode="numeric"
-                        min={rangeFrom}
-                        max={pageCount}
+                      <Input label="Hasta" type="number" inputMode="numeric" min={rangeFrom} max={pageCount}
                         value={rangeTo}
-                        onChange={(e) =>
-                          setRangeTo(
-                            Math.min(pageCount, Math.max(rangeFrom, parseInt(e.target.value) || rangeFrom))
-                          )
-                        }
+                        onChange={(e) => setRangeTo(Math.min(pageCount, Math.max(rangeFrom, parseInt(e.target.value) || rangeFrom)))}
                       />
                     </div>
                   )}
@@ -1125,8 +1071,7 @@ export function PrintForm({
                     <p className="mt-2 text-xs font-medium text-blue-600">
                       {pptxMode
                         ? `${rawEffectiveCount} ${rawEffectiveCount === 1 ? "diapositiva" : "diapositivas"} seleccionadas`
-                        : `Se imprimirán ${rawEffectiveCount} ${rawEffectiveCount === 1 ? "página" : "páginas"}`
-                      }
+                        : `Se imprimirán ${rawEffectiveCount} ${rawEffectiveCount === 1 ? "página" : "páginas"}`}
                     </p>
                   )}
                 </div>
@@ -1135,52 +1080,34 @@ export function PrintForm({
               {/* Diapositivas por hoja — solo PPTX */}
               {pptxMode && !isConverting && (
                 <div>
-                  <p className="mb-2 text-sm font-medium text-gray-700">
-                    Diapositivas por hoja
-                  </p>
+                  <p className="mb-2 text-sm font-medium text-gray-700">Diapositivas por hoja</p>
                   <div className="flex flex-wrap gap-2">
                     {SLIDES_PER_PAGE_OPTIONS.map((n) => {
                       const layout = SLIDE_LAYOUT[n];
                       return (
-                        <button
-                          key={n}
-                          type="button"
-                          onClick={() => setSlidesPerPage(n)}
+                        <button key={n} type="button" onClick={() => setSlidesPerPage(n)}
                           className={cn(
                             "flex flex-col items-center gap-1 rounded-xl border-2 p-2 transition-colors",
-                            slidesPerPage === n
-                              ? "border-blue-500 bg-blue-50"
-                              : "border-gray-200 bg-white"
+                            slidesPerPage === n ? "border-blue-500 bg-blue-50" : "border-gray-200 bg-white"
                           )}
                         >
-                          <div
-                            style={{
-                              display: "grid",
-                              gridTemplateColumns: `repeat(${layout.cols}, 1fr)`,
-                              gridTemplateRows:    `repeat(${layout.rows}, 1fr)`,
-                              width: 28,
-                              height: 36,
-                              gap: "2px",
-                              padding: "2px",
-                              backgroundColor: "#d1d5db",
-                              borderRadius: 3,
-                            }}
-                          >
+                          <div style={{
+                            display: "grid",
+                            gridTemplateColumns: `repeat(${layout.cols}, 1fr)`,
+                            gridTemplateRows:    `repeat(${layout.rows}, 1fr)`,
+                            width: 28, height: 36,
+                            gap: "2px", padding: "2px",
+                            backgroundColor: "#d1d5db", borderRadius: 3,
+                          }}>
                             {Array.from({ length: n }).map((_, i) => (
-                              <div
-                                key={i}
-                                style={{
-                                  backgroundColor:
-                                    slidesPerPage === n ? "#60a5fa" : "#f3f4f6",
-                                  borderRadius: 1,
-                                }}
-                              />
+                              <div key={i} style={{
+                                backgroundColor: slidesPerPage === n ? "#60a5fa" : "#f3f4f6",
+                                borderRadius: 1,
+                              }} />
                             ))}
                           </div>
-                          <span className={cn(
-                            "text-xs font-semibold",
-                            slidesPerPage === n ? "text-blue-700" : "text-gray-500"
-                          )}>
+                          <span className={cn("text-xs font-semibold",
+                            slidesPerPage === n ? "text-blue-700" : "text-gray-500")}>
                             {n}
                           </span>
                         </button>
@@ -1200,10 +1127,7 @@ export function PrintForm({
               <Input
                 {...register("copyCount")}
                 label="Cantidad de copias"
-                type="number"
-                inputMode="numeric"
-                min={1}
-                max={99}
+                type="number" inputMode="numeric" min={1} max={99}
                 error={errors.copyCount?.message}
                 required
               />
@@ -1248,13 +1172,8 @@ export function PrintForm({
             </div>
           )}
 
-          <Button
-            type="submit"
-            className="w-full"
-            size="lg"
-            disabled={isConverting}
-            loading={isConverting}
-          >
+          <Button type="submit" className="w-full" size="lg"
+            disabled={isConverting} loading={isConverting}>
             {isConverting ? "Procesando archivo…" : "Revisar y confirmar"}
           </Button>
         </form>
@@ -1280,24 +1199,17 @@ export function PrintForm({
       : files.length === 1 ? "Imagen" : `${files.length} imágenes`;
 
     const summaryRows = [
-      { label: "Nombre",          value: formValues.clientName },
-      {
-        label: "Archivo",
-        value: pdfMode
-          ? files[0].name
-          : imageMode
-            ? (files.length === 1 ? files[0].name : `${files.length} imágenes`)
-            : files[0].name,
-      },
-      { label: "Tipo de archivo", value: fileTypeLabel },
-      { label: "Formato",         value: `${PAPER_LABEL} (${PAPER_DESC})` },
+      { label: "Nombre",             value: formValues.clientName },
+      { label: "Archivo",            value: pdfMode ? files[0].name : imageMode ? (files.length === 1 ? files[0].name : `${files.length} imágenes`) : files[0].name },
+      { label: "Tipo de archivo",    value: fileTypeLabel },
+      { label: "Formato de impresión", value: `${PAPER[targetPaperSize].label} (${PAPER[targetPaperSize].desc})` },
       ...(imageMode ? [{ label: "Distribución", value: `${imagesPerPage} imagen${imagesPerPage !== 1 ? "es" : ""} por hoja` }] : []),
-      { label: "Tipo",            value: formValues.printType === "bw" ? "Blanco y Negro" : "Color" },
+      { label: "Tipo",               value: formValues.printType === "bw" ? "Blanco y Negro" : "Color" },
       { label: pptxMode ? "Diapositivas" : "Páginas", value: rangeLabel },
       ...(pptxMode ? [{ label: "Por hoja", value: `${slidesPerPage} diapositiva${slidesPerPage !== 1 ? "s" : ""}` }] : []),
-      { label: "Hojas a imprimir", value: wordMode ? "Según documento" : String(effectivePageCount) },
-      { label: "Copias",           value: String(formValues.copyCount) },
-      { label: "Precio por hoja",  value: formatCurrency(pricePerPage) },
+      { label: "Hojas a imprimir",   value: wordMode ? "Según documento" : String(effectivePageCount) },
+      { label: "Copias",             value: String(formValues.copyCount) },
+      { label: "Precio por hoja",    value: formatCurrency(pricePerPage) },
     ];
 
     return (
@@ -1313,16 +1225,11 @@ export function PrintForm({
                   className="overflow-hidden rounded-xl border border-gray-200 shadow-sm transition-all duration-300"
                   style={{
                     maxHeight: 180,
-                    width: (pdfMode || imageMode)
-                      ? Math.round(180 * (PAPER_W / PAPER_H))
-                      : "auto",
+                    width: Math.round(180 * (PAPER[targetPaperSize].w / PAPER[targetPaperSize].h)),
                   }}
                 >
-                  <img
-                    src={thumbnailUrl}
-                    alt="Vista previa del archivo"
-                    className="max-h-44 object-contain"
-                  />
+                  <img src={thumbnailUrl} alt="Vista previa"
+                    className="max-h-44 object-contain" />
                 </div>
               </div>
             )}
@@ -1345,11 +1252,8 @@ export function PrintForm({
             </dl>
 
             {imageMode && previewPages && (
-              <button
-                type="button"
-                onClick={handleShowPreview}
-                className="mt-4 flex w-full items-center justify-center gap-2 rounded-xl border border-blue-200 bg-blue-50 py-2.5 text-sm font-medium text-blue-700 active:bg-blue-100"
-              >
+              <button type="button" onClick={handleShowPreview}
+                className="mt-4 flex w-full items-center justify-center gap-2 rounded-xl border border-blue-200 bg-blue-50 py-2.5 text-sm font-medium text-blue-700 active:bg-blue-100">
                 <Eye className="h-4 w-4" />
                 Ver previa del documento
               </button>
@@ -1375,12 +1279,7 @@ export function PrintForm({
           )}
 
           <div className="flex gap-3">
-            <Button
-              variant="outline"
-              className="flex-1"
-              onClick={() => setStep("form")}
-              disabled={isSubmitting}
-            >
+            <Button variant="outline" className="flex-1" onClick={() => setStep("form")} disabled={isSubmitting}>
               Editar
             </Button>
             <Button className="flex-1" onClick={confirmAndSubmit} loading={isSubmitting}>
