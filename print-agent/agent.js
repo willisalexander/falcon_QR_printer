@@ -172,6 +172,28 @@ async function arrangeSlidesPerPage(pdfPath, slidesPerPage) {
   return outPath;
 }
 
+// ── Detectar tamaño de papel del PDF ────────────────────────
+// Devuelve el nombre del formulario Windows que coincide con las dimensiones del PDF.
+// Si no reconoce el tamaño, devuelve null → se usa el predeterminado de la impresora.
+
+async function getPaperSizeName(pdfPath) {
+  try {
+    const doc  = await PDFDocument.load(await readFile(pdfPath));
+    const { width, height } = doc.getPage(0).getSize();
+    const w = Math.min(width, height);
+    const h = Math.max(width, height);
+
+    // Tolerancia de ±12 pts para PDFs con márgenes o rotación leve
+    if (Math.abs(w - 612) <= 12 && Math.abs(h - 792)  <= 12) return "Letter";    // Carta  8.5×11"
+    if (Math.abs(w - 612) <= 12 && Math.abs(h - 936)  <= 12) return "Oficio II"; // Oficio 8.5×13"
+    if (Math.abs(w - 612) <= 12 && Math.abs(h - 1008) <= 12) return "Legal";     // Legal  8.5×14"
+
+    return null;
+  } catch {
+    return null;
+  }
+}
+
 // ── Claiming atómico ─────────────────────────────────────────
 
 async function claimNextJob() {
@@ -286,12 +308,18 @@ async function processJob(job, attempt) {
       }
     }
 
-    // Enviar a impresora
-    await print(fileToPrint, {
-      printer: printer.system_name,
-      copies:  job.copy_count,
-      silent:  true,
-    });
+    // Detectar tamaño de papel y enviar a impresora
+    const paperSizeName = await getPaperSizeName(fileToPrint);
+    await log("info", `  Tamaño de papel: ${paperSizeName ?? "predeterminado de la impresora"}`);
+
+    const printOptions = {
+      printer:   printer.system_name,
+      copies:    job.copy_count,
+      silent:    true,
+      ...(paperSizeName && { paperSize: paperSizeName }),
+    };
+
+    await print(fileToPrint, printOptions);
 
     // Éxito — actualizar estado
     await dbUpdateJob(job.id, {
