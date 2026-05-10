@@ -232,7 +232,7 @@ async function convertToPdfWithLibreOffice(inputPath) {
   // Es el método más forzoso para que LibreOffice no pause con "Press Enter to continue".
   const parts = [
     `"${loPath}"`,
-    `"--env:UserInstallation=${profileUrl}"`,
+    `"-env:UserInstallation=${profileUrl}"`,
     "--headless", "--norestore", "--nofirststartwizard", "--nolockcheck", "--nologo",
     ...(infilter ? [`"--infilter=${infilter}"`] : []),
     "--convert-to", "pdf",
