@@ -591,6 +591,8 @@ export function PrintForm({
         const file = files[0];
         const ext  = file.name.split(".").pop()?.toLowerCase() ?? "pdf";
         let contentType = "application/pdf";
+        let fileToUpload: Blob | File = file;
+
         if (wordMode) {
           contentType = ext === "doc"
             ? "application/msword"
@@ -599,11 +601,23 @@ export function PrintForm({
           contentType = ext === "ppt"
             ? "application/vnd.ms-powerpoint"
             : "application/vnd.openxmlformats-officedocument.presentationml.presentation";
+        } else if (pdfMode && printRange !== "all") {
+          // Extraer solo las páginas seleccionadas antes de subir
+          const fromPage = printRange === "single" ? rangeSinglePage : rangeFrom;
+          const toPage   = printRange === "single" ? rangeSinglePage : Math.min(rangeTo, pageCount);
+          const { PDFDocument } = await import("pdf-lib");
+          const srcDoc  = await PDFDocument.load(await file.arrayBuffer());
+          const newDoc  = await PDFDocument.create();
+          const indices = Array.from({ length: toPage - fromPage + 1 }, (_, i) => fromPage - 1 + i);
+          const pages   = await newDoc.copyPages(srcDoc, indices);
+          pages.forEach(p => newDoc.addPage(p));
+          fileToUpload = new Blob([await newDoc.save()], { type: "application/pdf" });
         }
+
         filePath = `jobs/${Date.now()}-${Math.random().toString(36).slice(2)}.${ext}`;
         const { error } = await supabase.storage
           .from("print-files")
-          .upload(filePath, file, { contentType, upsert: false });
+          .upload(filePath, fileToUpload, { contentType, upsert: false });
         if (error) throw new Error("Error al subir el archivo: " + error.message);
       }
 
@@ -621,6 +635,14 @@ export function PrintForm({
             : `${files.length}_imagenes.pdf`)
         : files[0].name;
 
+      // Para PPTX: calcular rango de diapositivas seleccionadas
+      const pptxFrom = pptxMode && printRange !== "all"
+        ? (printRange === "single" ? rangeSinglePage : rangeFrom)
+        : undefined;
+      const pptxTo = pptxMode && printRange !== "all"
+        ? (printRange === "single" ? rangeSinglePage : Math.min(rangeTo, pageCount))
+        : undefined;
+
       const result = await submitPrintJob({
         qrTokenId,
         clientName:       formValues.clientName,
@@ -632,6 +654,8 @@ export function PrintForm({
         thumbnailPath:    thumbnailPath ?? undefined,
         slidesPerPage:    pptxMode ? slidesPerPage : undefined,
         paperSize:        targetPaperSize,
+        pageFrom:         pptxFrom,
+        pageTo:           pptxTo,
       });
 
       if (!result.success) {

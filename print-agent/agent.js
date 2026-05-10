@@ -348,12 +348,30 @@ async function processJob(job, attempt) {
       extraFiles.push(convertedPdf);
       fileToPrint = convertedPdf;
 
-      // Para PowerPoint, aplicar layout de diapositivas por hoja
+      // Para PowerPoint: extraer rango de diapositivas si fue especificado
+      if ((ext === ".pptx" || ext === ".ppt") && (job.page_from || job.page_to)) {
+        const srcDoc      = await PDFDocument.load(await readFile(fileToPrint));
+        const totalSlides = srcDoc.getPageCount();
+        const from        = Math.max(0, (job.page_from ?? 1) - 1);
+        const to          = Math.min(totalSlides - 1, (job.page_to ?? totalSlides) - 1);
+        if (from > 0 || to < totalSlides - 1) {
+          await log("info", `  Extrayendo diapositivas ${from + 1}–${to + 1} de ${totalSlides}…`);
+          const newDoc  = await PDFDocument.create();
+          const pages   = await newDoc.copyPages(srcDoc, Array.from({ length: to - from + 1 }, (_, i) => from + i));
+          pages.forEach(p => newDoc.addPage(p));
+          const rangePath = fileToPrint.replace(".pdf", "_range.pdf");
+          await writeFile(rangePath, await newDoc.save());
+          extraFiles.push(rangePath);
+          fileToPrint = rangePath;
+        }
+      }
+
+      // Para PowerPoint: aplicar layout de diapositivas por hoja
       const slidesPerPage = job.images_per_page ?? 1;
       if ((ext === ".pptx" || ext === ".ppt") && slidesPerPage > 1) {
         await log("info", `  Aplicando layout: ${slidesPerPage} diapositivas por hoja…`);
-        const handoutPdf = await arrangeSlidesPerPage(convertedPdf, slidesPerPage);
-        if (handoutPdf !== convertedPdf) extraFiles.push(handoutPdf);
+        const handoutPdf = await arrangeSlidesPerPage(fileToPrint, slidesPerPage);
+        if (handoutPdf !== fileToPrint) extraFiles.push(handoutPdf);
         fileToPrint = handoutPdf;
       }
 
@@ -361,6 +379,17 @@ async function processJob(job, attempt) {
       const detectedForm = await getPaperSizeName(fileToPrint);
       if (detectedForm !== paperFormName) {
         await log("info", `  Redimensionando ${detectedForm ?? "desconocido"} → ${paperFormName}…`);
+        const resized = await resizePdfToTarget(fileToPrint, paperKey);
+        extraFiles.push(resized);
+        fileToPrint = resized;
+      }
+    }
+
+    // Para PDFs directos: redimensionar si las dimensiones no coinciden con el tamaño objetivo
+    if (ext === ".pdf") {
+      const detectedForm = await getPaperSizeName(fileToPrint);
+      if (detectedForm !== paperFormName) {
+        await log("info", `  PDF ${detectedForm ?? "desconocido"} → redimensionando a ${paperFormName}…`);
         const resized = await resizePdfToTarget(fileToPrint, paperKey);
         extraFiles.push(resized);
         fileToPrint = resized;
