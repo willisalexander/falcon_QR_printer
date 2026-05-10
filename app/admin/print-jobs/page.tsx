@@ -115,6 +115,7 @@ export default async function PrintJobsPage({ searchParams }: PageProps) {
                   <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wide text-gray-500">Correlativo</th>
                   <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wide text-gray-500">Cliente</th>
                   <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wide text-gray-500">Tipo</th>
+                  <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wide text-gray-500">Formato</th>
                   <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wide text-gray-500">Págs × Copias</th>
                   <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wide text-gray-500">Total</th>
                   <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wide text-gray-500">Estado</th>
@@ -125,7 +126,7 @@ export default async function PrintJobsPage({ searchParams }: PageProps) {
               <tbody>
                 {printJobs.length === 0 ? (
                   <tr>
-                    <td colSpan={8} className="px-4 py-12 text-center text-gray-400">
+                    <td colSpan={9} className="px-4 py-12 text-center text-gray-400">
                       No hay trabajos que coincidan con los filtros.
                     </td>
                   </tr>
@@ -158,6 +159,9 @@ export default async function PrintJobsPage({ searchParams }: PageProps) {
                       </td>
                       <td className="px-4 py-3 text-gray-600">
                         {job.print_type === "bw" ? "B/N" : "Color"}
+                      </td>
+                      <td className="px-4 py-3 text-gray-600 whitespace-nowrap">
+                        {job.paper_size === "oficio2" ? "Oficio 2" : "Carta"}
                       </td>
                       <td className="px-4 py-3 text-gray-600">
                         {job.page_count} × {job.copy_count}
