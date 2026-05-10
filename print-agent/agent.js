@@ -218,40 +218,27 @@ async function convertToPdfWithLibreOffice(inputPath) {
     ".doc":  "MS Word 97",
   };
 
-  // Rutas absolutas — Start-Process lanza LibreOffice desde su propio directorio,
-  // por eso las rutas relativas (./tmp/...) no funcionan
+  // Rutas absolutas necesarias para que LibreOffice encuentre los archivos
   const { resolve: resolvePath } = await import("node:path");
-  const absOutDir   = resolvePath(TEMP_DIR);
-  const absInput    = resolvePath(inputPath);
-  const profileDir  = resolvePath(TEMP_DIR, "lo_profile");
+  const absOutDir  = resolvePath(TEMP_DIR);
+  const absInput   = resolvePath(inputPath);
+  const profileDir = resolvePath(TEMP_DIR, "lo_profile");
   await mkdir(profileDir, { recursive: true }).catch(() => {});
-  const profileUrl  = "file:///" + profileDir.replace(/\\/g, "/");
+  const profileUrl = "file:///" + profileDir.replace(/\\/g, "/");
 
-  const safeLo      = loPath.replace(/'/g, "''");
-  const infilter    = infilterMap[ext] ?? "";
+  const infilter = infilterMap[ext] ?? "";
 
-  // Archivo vacío como stdin → LibreOffice recibe EOF y no pausa con "Press Enter"
-  const ps = [
-    `$stdin = [System.IO.Path]::GetTempFileName()`,
-    `try {`,
-    `  $a = @(`,
-    `    "--env:UserInstallation=${profileUrl}",`,
-    `    "--headless","--norestore","--nofirststartwizard","--nolockcheck","--nologo",`,
-    ...(infilter ? [`    "--infilter=${infilter}",`] : []),
-    `    "--convert-to","pdf",`,
-    `    "--outdir","${absOutDir.replace(/\\/g, "\\\\")}",`,
-    `    "${absInput.replace(/\\/g, "\\\\")}"`,
-    `  )`,
-    `  $p = Start-Process -FilePath '${safeLo}' -ArgumentList $a -WindowStyle Hidden -PassThru -RedirectStandardInput $stdin`,
-    `  if (-not $p.WaitForExit(60000)) { $p.Kill(); exit 1 }`,
-    `  exit $p.ExitCode`,
-    `} finally {`,
-    `  Remove-Item $stdin -Force -ErrorAction SilentlyContinue`,
-    `}`,
-  ].join("\r\n");
-
-  const { stderr } = await runPsScript(ps, 90000);
-  if (stderr.trim()) await log("warn", `  LibreOffice stderr: ${stderr.trim().slice(0, 200)}`);
+  // spawnAsync: stdio["ignore",...] → stdin es NUL → LibreOffice no pausa con "Press Enter"
+  //             windowsHide:true   → CREATE_NO_WINDOW → ninguna ventana/consola visible
+  const loArgs = [
+    `--env:UserInstallation=${profileUrl}`,
+    "--headless", "--norestore", "--nofirststartwizard", "--nolockcheck", "--nologo",
+    ...(infilter ? [`--infilter=${infilter}`] : []),
+    "--convert-to", "pdf",
+    "--outdir", absOutDir,
+    absInput,
+  ];
+  await spawnAsync(loPath, loArgs, { timeout: 90000 });
 
   const base    = basename(inputPath, extname(inputPath));
   const pdfPath = join(absOutDir, `${base}.pdf`);
