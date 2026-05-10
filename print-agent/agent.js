@@ -44,6 +44,42 @@ const PAPER_META = {
   legal:   { w: 612, h: 1008, formName: "Legal"     },
 };
 
+// ── Consultar bandejas y tamaños de papel disponibles en la impresora ──
+// Usa PowerShell + System.Drawing para obtener los nombres exactos del driver.
+
+async function queryPrinterBins(printerName) {
+  try {
+    const safe = printerName.replace(/'/g, "''");
+    const { stdout } = await execAsync(
+      `powershell -NoProfile -Command ` +
+      `"Add-Type -AssemblyName System.Drawing; ` +
+      `$ps = New-Object System.Drawing.Printing.PrinterSettings; ` +
+      `$ps.PrinterName = '${safe}'; ` +
+      `$ps.PaperSources | ForEach-Object { $_.SourceName }"`
+    );
+    return stdout.trim().split(/\r?\n/).map(s => s.trim()).filter(Boolean);
+  } catch {
+    return [];
+  }
+}
+
+async function queryPrinterPaperSizes(printerName) {
+  try {
+    const safe = printerName.replace(/'/g, "''");
+    const { stdout } = await execAsync(
+      `powershell -NoProfile -Command ` +
+      `"Add-Type -AssemblyName System.Drawing; ` +
+      `$ps = New-Object System.Drawing.Printing.PrinterSettings; ` +
+      `$ps.PrinterName = '${safe}'; ` +
+      `$ps.PaperSizes | Where-Object { $_.Width -ge 840 -and $_.Width -le 860 } | ` +
+      `ForEach-Object { $_.PaperName + ' (' + $_.Width + 'x' + $_.Height + ')' }"`
+    );
+    return stdout.trim().split(/\r?\n/).map(s => s.trim()).filter(Boolean);
+  } catch {
+    return [];
+  }
+}
+
 // Ruta al ejecutable de LibreOffice (se busca en el PATH y luego en rutas habituales de Windows)
 const LIBREOFFICE_PATHS = [
   "soffice",
@@ -336,7 +372,29 @@ async function processJob(job, attempt) {
     const trayName      = PAPER_TRAY_MAP[paperKey] ?? "";
 
     await log("info", `  Tamaño de papel : ${paperFormName} (${paperKey})`);
-    await log("info", `  Bandeja         : ${trayName || "automática (driver)"}`);
+
+    // Consultar bandejas reales del driver y validar el nombre configurado
+    const availableBins = await queryPrinterBins(printer.system_name);
+    let resolvedTray = trayName;
+    if (availableBins.length > 0) {
+      await log("info", `  Bandejas en driver: ${availableBins.join(" | ")}`);
+      if (trayName && !availableBins.includes(trayName)) {
+        await log("warn", `  ⚠ La bandeja "${trayName}" NO existe en esta impresora.`);
+        await log("warn", `  → Actualiza TRAY_${paperKey.toUpperCase()} en .env con uno de: ${availableBins.join(" | ")}`);
+        resolvedTray = "";  // omitir bin inválido; el driver elegirá según paperSize
+      }
+    }
+
+    // Consultar tamaños de papel del driver para verificar que "Oficio II" esté registrado
+    const availableSizes = await queryPrinterPaperSizes(printer.system_name);
+    if (availableSizes.length > 0) {
+      await log("info", `  Tamaños 8.5" en driver: ${availableSizes.join(" | ")}`);
+      if (!availableSizes.some(s => s.startsWith(paperFormName))) {
+        await log("warn", `  ⚠ El tamaño "${paperFormName}" puede no estar registrado. Tamaños disponibles: ${availableSizes.join(" | ")}`);
+      }
+    }
+
+    await log("info", `  Bandeja usada   : ${resolvedTray || "automática (driver)"}`);
 
     // Determinar el archivo a imprimir (conversión si es necesario)
     let fileToPrint = tempOriginal;
@@ -401,9 +459,10 @@ async function processJob(job, attempt) {
       copies:  job.copy_count,
       silent:  true,
       paperSize: paperFormName,
-      ...(trayName && { bin: trayName }),
+      ...(resolvedTray && { bin: resolvedTray }),
     };
 
+    await log("info", `  printOptions: ${JSON.stringify(printOptions)}`);
     await print(fileToPrint, printOptions);
 
     // Éxito — actualizar estado
@@ -535,6 +594,9 @@ async function main() {
   } else {
     await log("warn", "LibreOffice NO encontrado — los archivos Word/PowerPoint no podrán imprimirse");
   }
+
+  await log("info", `Bandeja Carta   (.env): "${PAPER_TRAY_MAP.carta   || "(no configurada)"}"`);
+  await log("info", `Bandeja Oficio2 (.env): "${PAPER_TRAY_MAP.oficio2 || "(no configurada)"}"`);
 
   try {
     const sysPrinters = await getPrinters();
