@@ -82,7 +82,7 @@ export default async function DashboardPage() {
   const stats = {
     total:    todayJobs.length,
     revenue:  todayJobs
-      .filter((j) => j.status === "paid" || j.status === "printed")
+      .filter((j) => j.status === "paid")
       .reduce((acc, j) => acc + Number(j.total_price), 0),
     pending:  todayJobs.filter((j) => j.status === "pending_approval").length,
     approved: todayJobs.filter((j) => j.status === "approved").length,
@@ -139,7 +139,7 @@ export default async function DashboardPage() {
                 </p>
                 <p className="mt-2 flex items-center gap-1.5 text-xs text-gray-400">
                   <DollarSign className="h-3.5 w-3.5" />
-                  trabajos pagados e impresos
+                  trabajos marcados como pagados
                 </p>
               </div>
               <div className="flex h-16 w-16 items-center justify-center rounded-full bg-emerald-50">
