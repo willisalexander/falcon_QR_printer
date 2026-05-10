@@ -217,12 +217,34 @@ async function convertToPdfWithLibreOffice(inputPath) {
     ".docx": "MS Word 2007 XML",
     ".doc":  "MS Word 97",
   };
-  const loArgs = [
-    "--headless", "--norestore", "--nofirststartwizard", "--nolockcheck", "--nologo",
-    ...(infilterMap[ext] ? [`--infilter=${infilterMap[ext]}`] : []),
-    "--convert-to", "pdf", "--outdir", outDir, inputPath,
-  ];
-  await spawnAsync(loPath, loArgs, { timeout: 60000 });
+
+  // Perfil de usuario aislado para LibreOffice → evita diálogos de recuperación/primer arranque
+  const { resolve: resolvePath } = await import("node:path");
+  const profileDir = resolvePath(TEMP_DIR, "lo_profile");
+  await mkdir(profileDir, { recursive: true }).catch(() => {});
+  const profileUrl = "file:///" + profileDir.replace(/\\/g, "/");
+
+  // Construir lista de argumentos
+  const infilter   = infilterMap[ext] ?? "";
+  const loArgsList = [
+    `"--env:UserInstallation=${profileUrl}"`,
+    '"--headless"', '"--norestore"', '"--nofirststartwizard"', '"--nolockcheck"', '"--nologo"',
+    ...(infilter ? [`"--infilter=${infilter}"`] : []),
+    '"--convert-to"', '"pdf"',
+    `"--outdir"`, `"${outDir.replace(/\\/g, "\\\\")}"`,
+    `"${inputPath.replace(/\\/g, "\\\\")}"`,
+  ].join(",");
+
+  // Lanzar mediante Start-Process -WindowStyle Hidden para suprimir cualquier ventana/diálogo GUI
+  const ps = [
+    `$a = @(${loArgsList})`,
+    `$p = Start-Process -FilePath '${loPath.replace(/'/g, "''")}' -ArgumentList $a -WindowStyle Hidden -PassThru`,
+    `if (-not $p.WaitForExit(60000)) { $p.Kill(); exit 1 }`,
+    `exit $p.ExitCode`,
+  ].join("\r\n");
+
+  const { stderr } = await runPsScript(ps);
+  if (stderr.trim()) await log("warn", `  LibreOffice stderr: ${stderr.trim().slice(0, 200)}`);
 
   const base    = basename(inputPath, extname(inputPath));
   const pdfPath = join(outDir, `${base}.pdf`);
