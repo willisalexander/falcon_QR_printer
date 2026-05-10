@@ -45,35 +45,53 @@ const PAPER_META = {
 };
 
 // ── Consultar bandejas y tamaños de papel disponibles en la impresora ──
-// Usa PowerShell + System.Drawing para obtener los nombres exactos del driver.
+// Escribe un .ps1 temporal para evitar problemas de escape en la línea de comandos.
+
+async function runPsScript(scriptContent) {
+  const scriptPath = join(TEMP_DIR, `ps_query_${Date.now()}.ps1`);
+  try {
+    await writeFile(scriptPath, scriptContent, "utf8");
+    const { stdout, stderr } = await execAsync(
+      `powershell -NoProfile -ExecutionPolicy Bypass -File "${scriptPath}"`,
+      { timeout: 10000 }
+    );
+    return { stdout: stdout ?? "", stderr: stderr ?? "" };
+  } finally {
+    await unlink(scriptPath).catch(() => {});
+  }
+}
 
 async function queryPrinterBins(printerName) {
+  const safe = printerName.replace(/'/g, "''");
+  const script = [
+    "Add-Type -AssemblyName System.Drawing",
+    `$ps = New-Object System.Drawing.Printing.PrinterSettings`,
+    `$ps.PrinterName = '${safe}'`,
+    "$ps.PaperSources | ForEach-Object { Write-Output $_.SourceName }",
+  ].join("\r\n");
+
   try {
-    const safe = printerName.replace(/'/g, "''");
-    const { stdout } = await execAsync(
-      `powershell -NoProfile -Command ` +
-      `"Add-Type -AssemblyName System.Drawing; ` +
-      `$ps = New-Object System.Drawing.Printing.PrinterSettings; ` +
-      `$ps.PrinterName = '${safe}'; ` +
-      `$ps.PaperSources | ForEach-Object { $_.SourceName }"`
-    );
+    const { stdout, stderr } = await runPsScript(script);
+    if (stderr.trim()) await log("warn", `  queryPrinterBins: ${stderr.trim().slice(0, 200)}`);
     return stdout.trim().split(/\r?\n/).map(s => s.trim()).filter(Boolean);
-  } catch {
+  } catch (err) {
+    await log("warn", `  queryPrinterBins error: ${err.message?.slice(0, 150)}`);
     return [];
   }
 }
 
 async function queryPrinterPaperSizes(printerName) {
+  const safe = printerName.replace(/'/g, "''");
+  const script = [
+    "Add-Type -AssemblyName System.Drawing",
+    `$ps = New-Object System.Drawing.Printing.PrinterSettings`,
+    `$ps.PrinterName = '${safe}'`,
+    "$ps.PaperSizes | Where-Object { $_.Width -ge 840 -and $_.Width -le 870 } |",
+    "  ForEach-Object { Write-Output ($_.PaperName + ' (' + $_.Width + 'x' + $_.Height + ')') }",
+  ].join("\r\n");
+
   try {
-    const safe = printerName.replace(/'/g, "''");
-    const { stdout } = await execAsync(
-      `powershell -NoProfile -Command ` +
-      `"Add-Type -AssemblyName System.Drawing; ` +
-      `$ps = New-Object System.Drawing.Printing.PrinterSettings; ` +
-      `$ps.PrinterName = '${safe}'; ` +
-      `$ps.PaperSizes | Where-Object { $_.Width -ge 840 -and $_.Width -le 860 } | ` +
-      `ForEach-Object { $_.PaperName + ' (' + $_.Width + 'x' + $_.Height + ')' }"`
-    );
+    const { stdout } = await runPsScript(script);
     return stdout.trim().split(/\r?\n/).map(s => s.trim()).filter(Boolean);
   } catch {
     return [];
@@ -110,12 +128,24 @@ for (const dir of [TEMP_DIR, LOG_DIR]) {
 
 const ICONS = { info: "ℹ️ ", warn: "⚠️ ", error: "❌", success: "✅" };
 
+function getTimestamp() {
+  // Guatemala es UTC-6 sin horario de verano
+  const ts = new Intl.DateTimeFormat("sv-SE", {
+    timeZone: "America/Guatemala",
+    year: "numeric", month: "2-digit", day: "2-digit",
+    hour: "2-digit", minute: "2-digit", second: "2-digit",
+    hour12: false,
+  }).format(new Date());
+  return ts.replace("T", " "); // "2026-05-10 11:43:51"
+}
+
 async function log(level, message, data) {
-  const ts   = new Date().toISOString();
+  const ts   = getTimestamp();
   const icon = ICONS[level] ?? " •";
-  const line = `[${ts}] ${icon} ${message}${data ? "  " + JSON.stringify(data) : ""}`;
+  const line = `[${ts} GT] ${icon} ${message}${data ? "  " + JSON.stringify(data) : ""}`;
   console.log(line);
-  const file = join(LOG_DIR, `agent-${ts.slice(0, 10)}.log`);
+  const dateStr = ts.slice(0, 10);
+  const file = join(LOG_DIR, `agent-${dateStr}.log`);
   await appendFile(file, line + "\n").catch(() => {});
 }
 
