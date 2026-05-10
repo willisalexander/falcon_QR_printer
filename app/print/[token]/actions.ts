@@ -79,7 +79,10 @@ export async function submitPrintJob(input: unknown): Promise<PrintJobResult> {
   const pricePerPage = data.printType === "bw" ? priceBw : priceColor;
   const totalPrice   = Math.round(pricePerPage * data.pageCount * data.copyCount * 100) / 100;
   const totalSheets = data.pageCount * data.copyCount;
-  const initialStatus = totalSheets > maxPagesNoApproval ? "pending_approval" : "approved";
+  const requiresApproval =
+    totalSheets > maxPagesNoApproval ||
+    (data.paperSize === "oficio2" && data.printType === "color");
+  const initialStatus = requiresApproval ? "pending_approval" : "approved";
 
   // 6. Generar correlativo
   const { data: correlative, error: corrError } = await supabase.rpc("generate_daily_correlative");

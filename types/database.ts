@@ -84,6 +84,9 @@ export interface PrintJob {
   rejected_reason: string | null;
   client_ip: string | null;
   notes: string | null;
+  paper_size: string | null;
+  page_from: number | null;
+  page_to: number | null;
   paid_at: string | null;
   printed_at: string | null;
   created_at: string;

@@ -18,6 +18,7 @@ import {
   Clock,
   Printer,
   Hash,
+  FileImage,
 } from "lucide-react";
 import type { PrintJob, PrintJobEvent, Profile } from "@/types";
 import type { Metadata } from "next";
@@ -149,6 +150,15 @@ export default async function PrintJobDetailPage({ params }: PageProps) {
                 </div>
 
                 <div className="flex flex-col gap-0.5">
+                  <dt className="flex items-center gap-1.5 text-xs font-medium text-gray-500">
+                    <FileImage className="h-3.5 w-3.5" /> Formato de papel
+                  </dt>
+                  <dd className="font-medium text-gray-900">
+                    {job.paper_size === "oficio2" ? "Oficio 2 (8.5 × 13 in)" : "Carta (8.5 × 11 in)"}
+                  </dd>
+                </div>
+
+                <div className="flex flex-col gap-0.5">
                   <dt className="text-xs font-medium text-gray-500">
                     Precio por página
                   </dt>
@@ -160,6 +170,17 @@ export default async function PrintJobDetailPage({ params }: PageProps) {
                     )}
                   </dd>
                 </div>
+
+                {job.images_per_page && job.images_per_page > 1 && (
+                  <div className="flex flex-col gap-0.5">
+                    <dt className="text-xs font-medium text-gray-500">
+                      Diapositivas por hoja
+                    </dt>
+                    <dd className="font-medium text-gray-900">
+                      {job.images_per_page}
+                    </dd>
+                  </div>
+                )}
 
                 <div className="flex flex-col gap-0.5 col-span-2 border-t border-gray-100 pt-3">
                   <dt className="text-xs font-medium text-gray-500">
@@ -188,16 +209,6 @@ export default async function PrintJobDetailPage({ params }: PageProps) {
               <CardTitle className="mb-4">Archivo</CardTitle>
               {job.file_path ? (
                 <div className="space-y-3">
-                  {/* Miniatura */}
-                  {thumbnailUrl && (
-                    <div className="flex justify-center rounded-xl border border-gray-100 bg-gray-50 p-3">
-                      <img
-                        src={thumbnailUrl}
-                        alt="Vista previa"
-                        className="max-h-52 rounded-lg object-contain shadow-sm"
-                      />
-                    </div>
-                  )}
                   <div className="flex items-center justify-between rounded-xl border border-gray-200 p-4">
                     <div className="flex items-center gap-3">
                       <FileText className="h-8 w-8 text-blue-500 flex-shrink-0" />
@@ -220,6 +231,16 @@ export default async function PrintJobDetailPage({ params }: PageProps) {
                       </a>
                     )}
                   </div>
+                  {/* Miniatura debajo del archivo */}
+                  {thumbnailUrl && (
+                    <div className="flex justify-center rounded-xl border border-gray-100 bg-gray-50 p-3">
+                      <img
+                        src={thumbnailUrl}
+                        alt="Vista previa del documento"
+                        className="max-h-64 rounded-lg object-contain shadow-sm"
+                      />
+                    </div>
+                  )}
                 </div>
               ) : (
                 <p className="text-sm text-gray-400">No hay archivo disponible.</p>
