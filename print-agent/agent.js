@@ -64,13 +64,14 @@ const PAPER_META = {
 // ── Consultar bandejas y tamaños de papel disponibles en la impresora ──
 // Escribe un .ps1 temporal para evitar problemas de escape en la línea de comandos.
 
-async function runPsScript(scriptContent) {
-  const scriptPath = join(TEMP_DIR, `ps_query_${Date.now()}.ps1`);
+async function runPsScript(scriptContent, timeout = 10000) {
+  const { resolve: res } = await import("node:path");
+  const scriptPath = res(TEMP_DIR, `ps_query_${Date.now()}.ps1`);
   try {
     await writeFile(scriptPath, scriptContent, "utf8");
     const { stdout, stderr } = await execAsync(
       `powershell -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File "${scriptPath}"`,
-      { timeout: 10000, windowsHide: true }
+      { timeout, windowsHide: true }
     );
     return { stdout: stdout ?? "", stderr: stderr ?? "" };
   } finally {
@@ -249,7 +250,7 @@ async function convertToPdfWithLibreOffice(inputPath) {
     `}`,
   ].join("\r\n");
 
-  const { stderr } = await runPsScript(ps);
+  const { stderr } = await runPsScript(ps, 90000);
   if (stderr.trim()) await log("warn", `  LibreOffice stderr: ${stderr.trim().slice(0, 200)}`);
 
   const base    = basename(inputPath, extname(inputPath));
