@@ -513,7 +513,7 @@ export function PrintForm({
     } else if (wordFile) {
       setFiles([wordFile]);
       setPageCount(1);
-      setRangeTo(1);
+      setRangeTo("1");
     } else {
       setImagesPerPage(1);
       setFiles(selected);
