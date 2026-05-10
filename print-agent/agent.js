@@ -1,5 +1,5 @@
 /**
- * Print QR System — Agente Local de Impresión v2.1
+ * Print QR System — Agente Local de Impresión v2.2
  *
  * Soporta PDF, Word (.doc/.docx) y PowerPoint (.ppt/.pptx).
  * Para DOCX/PPTX se usa LibreOffice para convertir a PDF antes de imprimir.
@@ -53,7 +53,7 @@ async function runPsScript(scriptContent) {
     await writeFile(scriptPath, scriptContent, "utf8");
     const { stdout, stderr } = await execAsync(
       `powershell -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File "${scriptPath}"`,
-      { timeout: 10000 }
+      { timeout: 10000, windowsHide: true }
     );
     return { stdout: stdout ?? "", stderr: stderr ?? "" };
   } finally {
@@ -193,7 +193,16 @@ async function convertToPdfWithLibreOffice(inputPath) {
   }
 
   const outDir = TEMP_DIR;
-  await execAsync(`"${loPath}" --headless --norestore --nofirststartwizard --convert-to pdf --outdir "${outDir}" "${inputPath}"`);
+  const ext = extname(inputPath).toLowerCase();
+  const infilter =
+    ext === ".pptx" ? `--infilter="Impress MS PowerPoint 2007 XML"` :
+    ext === ".ppt"  ? `--infilter="MS PowerPoint 97"` :
+    ext === ".docx" ? `--infilter="MS Word 2007 XML"` :
+    ext === ".doc"  ? `--infilter="MS Word 97"` : "";
+  await execAsync(
+    `"${loPath}" --headless --norestore --nofirststartwizard --nolockcheck --nologo ${infilter} --convert-to pdf --outdir "${outDir}" "${inputPath}"`,
+    { timeout: 60000, windowsHide: true }
+  );
 
   const base    = basename(inputPath, extname(inputPath));
   const pdfPath = join(outDir, `${base}.pdf`);
@@ -604,7 +613,7 @@ function setupGracefulShutdown() {
 async function main() {
   const sep = "═".repeat(52);
   await log("info", sep);
-  await log("info", "Print QR System — Agente de Impresión v2.1");
+  await log("info", "Print QR System — Agente de Impresión v2.2");
   await log("info", `Supabase : ${SUPABASE_URL}`);
   await log("info", `Polling  : cada ${POLL_INTERVAL_MS / 1000} s`);
   await log("info", `Reintentos: ${MAX_RETRIES}  |  Stuck timeout: ${STUCK_TIMEOUT_MIN} min`);
