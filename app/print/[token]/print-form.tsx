@@ -330,9 +330,9 @@ export function PrintForm({
 
   // Rango de impresión (PDF y PPTX)
   const [printRange,      setPrintRange     ] = useState<PrintRange>("all");
-  const [rangeSinglePage, setRangeSinglePage] = useState(1);
-  const [rangeFrom,       setRangeFrom      ] = useState(1);
-  const [rangeTo,         setRangeTo        ] = useState(1);
+  const [rangeSinglePage, setRangeSinglePage] = useState("1");
+  const [rangeFrom,       setRangeFrom      ] = useState("1");
+  const [rangeTo,         setRangeTo        ] = useState("1");
 
   // Vista previa de imágenes
   const [previewPages,        setPreviewPages       ] = useState<string[] | null>(null);
@@ -354,10 +354,12 @@ export function PrintForm({
   const wordMode  = files.length > 0 && isWordFile(files[0]);
   const pptxMode  = files.length > 0 && isPptxFile(files[0]);
 
+  const _from = parseInt(rangeFrom)  || 1;
+  const _to   = parseInt(rangeTo)    || pageCount;
   const rawEffectiveCount =
     printRange === "all"    ? pageCount :
     printRange === "single" ? 1 :
-    Math.max(1, Math.min(rangeTo, pageCount) - Math.max(1, rangeFrom) + 1);
+    Math.max(1, Math.min(_to, pageCount) - Math.max(1, _from) + 1);
 
   const effectivePageCount = pptxMode
     ? Math.ceil(rawEffectiveCount / slidesPerPage)
@@ -429,9 +431,9 @@ export function PrintForm({
     setDetectedPaperSize(null);
     setTargetPaperSize("carta");
     setPrintRange("all");
-    setRangeSinglePage(1);
-    setRangeFrom(1);
-    setRangeTo(1);
+    setRangeSinglePage("1");
+    setRangeFrom("1");
+    setRangeTo("1");
     setSlidesPerPage(1);
 
     const allowedMimes = [
@@ -484,14 +486,14 @@ export function PrintForm({
         setDetectedPaperSize(detected);
         setTargetPaperSize(detected === "otro" ? "carta" : detected);
         setPageCount(count);
-        setRangeTo(count);
+        setRangeTo(String(count));
         try {
           const thumb = await generatePdfThumbnail(pdfFile, 400);
           setThumbnailBlob(thumb);
         } catch { /* miniatura no crítica */ }
       } catch {
         setPageCount(1);
-        setRangeTo(1);
+        setRangeTo("1");
       } finally {
         setIsConverting(false);
       }
@@ -501,10 +503,10 @@ export function PrintForm({
       try {
         const count = await getPptxSlideCount(pptxFile);
         setPageCount(count);
-        setRangeTo(count);
+        setRangeTo(String(count));
       } catch {
         setPageCount(1);
-        setRangeTo(1);
+        setRangeTo("1");
       } finally {
         setIsConverting(false);
       }
@@ -530,9 +532,9 @@ export function PrintForm({
     setDetectedPaperSize(null);
     setTargetPaperSize("carta");
     setPrintRange("all");
-    setRangeSinglePage(1);
-    setRangeFrom(1);
-    setRangeTo(1);
+    setRangeSinglePage("1");
+    setRangeFrom("1");
+    setRangeTo("1");
   }
 
   async function handleShowPreview() {
@@ -555,12 +557,13 @@ export function PrintForm({
       setFileError("No se pudo procesar las imágenes. Vuelve a seleccionarlas.");
       return;
     }
+    const _single = parseInt(rangeSinglePage);
     if ((pdfMode || pptxMode) && printRange === "single" &&
-        (rangeSinglePage < 1 || rangeSinglePage > pageCount)) {
+        (isNaN(_single) || _single < 1 || _single > pageCount)) {
       setFileError(`El número debe estar entre 1 y ${pageCount}.`);
       return;
     }
-    if ((pdfMode || pptxMode) && printRange === "range" && rangeFrom > rangeTo) {
+    if ((pdfMode || pptxMode) && printRange === "range" && _from > _to) {
       setFileError("El rango no es válido.");
       return;
     }
@@ -603,8 +606,8 @@ export function PrintForm({
             : "application/vnd.openxmlformats-officedocument.presentationml.presentation";
         } else if (pdfMode && printRange !== "all") {
           // Extraer solo las páginas seleccionadas antes de subir
-          const fromPage = printRange === "single" ? rangeSinglePage : rangeFrom;
-          const toPage   = printRange === "single" ? rangeSinglePage : Math.min(rangeTo, pageCount);
+          const fromPage = printRange === "single" ? (parseInt(rangeSinglePage) || 1) : (parseInt(rangeFrom) || 1);
+          const toPage   = printRange === "single" ? (parseInt(rangeSinglePage) || 1) : Math.min(parseInt(rangeTo) || pageCount, pageCount);
           const { PDFDocument } = await import("pdf-lib");
           const srcDoc  = await PDFDocument.load(await file.arrayBuffer());
           const newDoc  = await PDFDocument.create();
@@ -637,10 +640,10 @@ export function PrintForm({
 
       // Para PPTX: calcular rango de diapositivas seleccionadas
       const pptxFrom = pptxMode && printRange !== "all"
-        ? (printRange === "single" ? rangeSinglePage : rangeFrom)
+        ? (printRange === "single" ? (parseInt(rangeSinglePage) || 1) : (parseInt(rangeFrom) || 1))
         : undefined;
       const pptxTo = pptxMode && printRange !== "all"
-        ? (printRange === "single" ? rangeSinglePage : Math.min(rangeTo, pageCount))
+        ? (printRange === "single" ? (parseInt(rangeSinglePage) || 1) : Math.min(parseInt(rangeTo) || pageCount, pageCount))
         : undefined;
 
       const result = await submitPrintJob({
@@ -1070,7 +1073,7 @@ export function PrintForm({
                         label={`Número de ${pptxMode ? "diapositiva" : "página"} (1 – ${pageCount})`}
                         type="number" inputMode="numeric" min={1} max={pageCount}
                         value={rangeSinglePage}
-                        onChange={(e) => setRangeSinglePage(Math.min(pageCount, Math.max(1, parseInt(e.target.value) || 1)))}
+                        onChange={(e) => setRangeSinglePage(e.target.value)}
                       />
                     </div>
                   )}
@@ -1079,15 +1082,11 @@ export function PrintForm({
                     <div className="mt-3 grid grid-cols-2 gap-3">
                       <Input label="Desde" type="number" inputMode="numeric" min={1} max={pageCount}
                         value={rangeFrom}
-                        onChange={(e) => {
-                          const v = Math.min(pageCount, Math.max(1, parseInt(e.target.value) || 1));
-                          setRangeFrom(v);
-                          if (v > rangeTo) setRangeTo(v);
-                        }}
+                        onChange={(e) => setRangeFrom(e.target.value)}
                       />
-                      <Input label="Hasta" type="number" inputMode="numeric" min={rangeFrom} max={pageCount}
+                      <Input label="Hasta" type="number" inputMode="numeric" min={1} max={pageCount}
                         value={rangeTo}
-                        onChange={(e) => setRangeTo(Math.min(pageCount, Math.max(rangeFrom, parseInt(e.target.value) || rangeFrom)))}
+                        onChange={(e) => setRangeTo(e.target.value)}
                       />
                     </div>
                   )}
