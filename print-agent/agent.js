@@ -13,11 +13,28 @@ const { print, getPrinters } = pdfToPrinter;
 import { writeFile, mkdir, unlink, readFile, appendFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { join, extname, basename } from "node:path";
-import { exec } from "node:child_process";
+import { exec, spawn } from "node:child_process";
 import { promisify } from "node:util";
 import { PDFDocument } from "pdf-lib";
 
 const execAsync = promisify(exec);
+
+// Ejecuta un proceso con stdin cerrado (evita prompts interactivos) y sin ventana
+function spawnAsync(cmd, args, { timeout = 60000 } = {}) {
+  return new Promise((resolve, reject) => {
+    const proc = spawn(cmd, args, { stdio: ["ignore", "pipe", "pipe"], windowsHide: true });
+    let stdout = "", stderr = "";
+    proc.stdout?.on("data", (d) => { stdout += d; });
+    proc.stderr?.on("data", (d) => { stderr += d; });
+    const timer = setTimeout(() => { proc.kill(); reject(new Error("Timeout")); }, timeout);
+    proc.on("close", (code) => {
+      clearTimeout(timer);
+      if (code !== 0) reject(new Error(stderr.trim() || `Proceso terminó con código ${code}`));
+      else resolve({ stdout, stderr });
+    });
+    proc.on("error", reject);
+  });
+}
 
 // ── Configuración ────────────────────────────────────────────
 
@@ -194,15 +211,18 @@ async function convertToPdfWithLibreOffice(inputPath) {
 
   const outDir = TEMP_DIR;
   const ext = extname(inputPath).toLowerCase();
-  const infilter =
-    ext === ".pptx" ? `--infilter="Impress MS PowerPoint 2007 XML"` :
-    ext === ".ppt"  ? `--infilter="MS PowerPoint 97"` :
-    ext === ".docx" ? `--infilter="MS Word 2007 XML"` :
-    ext === ".doc"  ? `--infilter="MS Word 97"` : "";
-  await execAsync(
-    `"${loPath}" --headless --norestore --nofirststartwizard --nolockcheck --nologo ${infilter} --convert-to pdf --outdir "${outDir}" "${inputPath}"`,
-    { timeout: 60000, windowsHide: true }
-  );
+  const infilterMap = {
+    ".pptx": "Impress MS PowerPoint 2007 XML",
+    ".ppt":  "MS PowerPoint 97",
+    ".docx": "MS Word 2007 XML",
+    ".doc":  "MS Word 97",
+  };
+  const loArgs = [
+    "--headless", "--norestore", "--nofirststartwizard", "--nolockcheck", "--nologo",
+    ...(infilterMap[ext] ? [`--infilter=${infilterMap[ext]}`] : []),
+    "--convert-to", "pdf", "--outdir", outDir, inputPath,
+  ];
+  await spawnAsync(loPath, loArgs, { timeout: 60000 });
 
   const base    = basename(inputPath, extname(inputPath));
   const pdfPath = join(outDir, `${base}.pdf`);
