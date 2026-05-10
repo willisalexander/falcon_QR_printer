@@ -209,7 +209,6 @@ async function convertToPdfWithLibreOffice(inputPath) {
     );
   }
 
-  const outDir = TEMP_DIR;
   const ext = extname(inputPath).toLowerCase();
   const infilterMap = {
     ".pptx": "Impress MS PowerPoint 2007 XML",
@@ -218,37 +217,43 @@ async function convertToPdfWithLibreOffice(inputPath) {
     ".doc":  "MS Word 97",
   };
 
-  // Perfil de usuario aislado para LibreOffice → evita diálogos de recuperación/primer arranque
+  // Rutas absolutas — Start-Process lanza LibreOffice desde su propio directorio,
+  // por eso las rutas relativas (./tmp/...) no funcionan
   const { resolve: resolvePath } = await import("node:path");
-  const profileDir = resolvePath(TEMP_DIR, "lo_profile");
+  const absOutDir   = resolvePath(TEMP_DIR);
+  const absInput    = resolvePath(inputPath);
+  const profileDir  = resolvePath(TEMP_DIR, "lo_profile");
   await mkdir(profileDir, { recursive: true }).catch(() => {});
-  const profileUrl = "file:///" + profileDir.replace(/\\/g, "/");
+  const profileUrl  = "file:///" + profileDir.replace(/\\/g, "/");
 
-  // Construir lista de argumentos
-  const infilter   = infilterMap[ext] ?? "";
-  const loArgsList = [
-    `"--env:UserInstallation=${profileUrl}"`,
-    '"--headless"', '"--norestore"', '"--nofirststartwizard"', '"--nolockcheck"', '"--nologo"',
-    ...(infilter ? [`"--infilter=${infilter}"`] : []),
-    '"--convert-to"', '"pdf"',
-    `"--outdir"`, `"${outDir.replace(/\\/g, "\\\\")}"`,
-    `"${inputPath.replace(/\\/g, "\\\\")}"`,
-  ].join(",");
+  const safeLo      = loPath.replace(/'/g, "''");
+  const infilter    = infilterMap[ext] ?? "";
 
-  // Lanzar con Start-Process -WindowStyle Hidden y stdin redirigido a NUL
-  // para que LibreOffice lea EOF inmediatamente en lugar de pausar con "Press Enter"
+  // Archivo vacío como stdin → LibreOffice recibe EOF y no pausa con "Press Enter"
   const ps = [
-    `$a = @(${loArgsList})`,
-    `$p = Start-Process -FilePath '${loPath.replace(/'/g, "''")}' -ArgumentList $a -WindowStyle Hidden -PassThru -RedirectStandardInput 'NUL'`,
-    `if (-not $p.WaitForExit(60000)) { $p.Kill(); exit 1 }`,
-    `exit $p.ExitCode`,
+    `$stdin = [System.IO.Path]::GetTempFileName()`,
+    `try {`,
+    `  $a = @(`,
+    `    "--env:UserInstallation=${profileUrl}",`,
+    `    "--headless","--norestore","--nofirststartwizard","--nolockcheck","--nologo",`,
+    ...(infilter ? [`    "--infilter=${infilter}",`] : []),
+    `    "--convert-to","pdf",`,
+    `    "--outdir","${absOutDir.replace(/\\/g, "\\\\")}",`,
+    `    "${absInput.replace(/\\/g, "\\\\")}"`,
+    `  )`,
+    `  $p = Start-Process -FilePath '${safeLo}' -ArgumentList $a -WindowStyle Hidden -PassThru -RedirectStandardInput $stdin`,
+    `  if (-not $p.WaitForExit(60000)) { $p.Kill(); exit 1 }`,
+    `  exit $p.ExitCode`,
+    `} finally {`,
+    `  Remove-Item $stdin -Force -ErrorAction SilentlyContinue`,
+    `}`,
   ].join("\r\n");
 
   const { stderr } = await runPsScript(ps);
   if (stderr.trim()) await log("warn", `  LibreOffice stderr: ${stderr.trim().slice(0, 200)}`);
 
   const base    = basename(inputPath, extname(inputPath));
-  const pdfPath = join(outDir, `${base}.pdf`);
+  const pdfPath = join(absOutDir, `${base}.pdf`);
 
   if (!existsSync(pdfPath)) {
     throw new Error(`LibreOffice no generó el PDF esperado en: ${pdfPath}`);
