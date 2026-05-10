@@ -12,13 +12,13 @@ interface PageProps {
 
 function sumRevenue(list: PrintJob[]) {
   return list
-    .filter((j) => j.status === "paid" || j.status === "printed")
+    .filter((j) => j.status === "paid")
     .reduce((acc, j) => acc + Number(j.total_price), 0);
 }
 
 function sumPages(list: PrintJob[]) {
   return list
-    .filter((j) => j.status === "paid" || j.status === "printed")
+    .filter((j) => j.status === "paid")
     .reduce((acc, j) => acc + j.page_count * j.copy_count, 0);
 }
 
