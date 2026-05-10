@@ -631,6 +631,7 @@ export function PrintForm({
         originalFileName: finalName,
         thumbnailPath:    thumbnailPath ?? undefined,
         slidesPerPage:    pptxMode ? slidesPerPage : undefined,
+        paperSize:        targetPaperSize,
       });
 
       if (!result.success) {

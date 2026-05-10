@@ -13,6 +13,7 @@ const submitSchema = z.object({
   originalFileName: z.string().min(1).max(255),
   thumbnailPath:    z.string().max(500).optional(),
   slidesPerPage:    z.number().int().min(1).max(9).optional(),
+  paperSize:        z.enum(["carta", "oficio2"]).default("carta"),
 });
 
 type PrintJobInput = z.infer<typeof submitSchema>;
@@ -102,6 +103,7 @@ export async function submitPrintJob(input: unknown): Promise<PrintJobResult> {
       thumbnail_path:       data.thumbnailPath ?? null,
       qr_token_id:          data.qrTokenId,
       images_per_page:      data.slidesPerPage ?? 1,
+      paper_size:           data.paperSize,
     })
     .select("id, correlative, total_price, client_name")
     .single();

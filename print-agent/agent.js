@@ -29,12 +29,19 @@ const LOG_DIR           = process.env.LOG_DIR            ?? "./logs";
 const MAX_RETRIES       = parseInt(process.env.MAX_RETRIES       ?? "3");
 const STUCK_TIMEOUT_MIN = parseInt(process.env.STUCK_TIMEOUT_MIN ?? "10");
 
-// Mapa: nombre de formulario Windows → bandeja configurada en el .env
+// Mapa clave DB ("carta"/"oficio2") → bandeja configurada en el .env
 // Si el valor está vacío se omite el parámetro y el driver decide automáticamente.
 const PAPER_TRAY_MAP = {
-  "Letter":    process.env.TRAY_CARTA   ?? "",
-  "Oficio II": process.env.TRAY_OFICIO2 ?? "",
-  "Legal":     process.env.TRAY_LEGAL   ?? "",
+  "carta":   process.env.TRAY_CARTA   ?? "",
+  "oficio2": process.env.TRAY_OFICIO2 ?? "",
+  "legal":   process.env.TRAY_LEGAL   ?? "",
+};
+
+// Dimensiones en puntos PostScript y nombre de formulario Windows por clave DB
+const PAPER_META = {
+  carta:   { w: 612, h: 792,  formName: "Letter"    },
+  oficio2: { w: 612, h: 936,  formName: "Oficio II" },
+  legal:   { w: 612, h: 1008, formName: "Legal"     },
 };
 
 // Ruta al ejecutable de LibreOffice (se busca en el PATH y luego en rutas habituales de Windows)
@@ -180,9 +187,36 @@ async function arrangeSlidesPerPage(pdfPath, slidesPerPage) {
   return outPath;
 }
 
+// ── Redimensionar PDF al tamaño de papel objetivo ───────────
+// Escala cada página para que entre en las dimensiones objetivo (fit-and-center).
+
+async function resizePdfToTarget(pdfPath, paperKey) {
+  const { w: targetW, h: targetH } = PAPER_META[paperKey] ?? PAPER_META.carta;
+  const srcBytes = await readFile(pdfPath);
+  const srcDoc   = await PDFDocument.load(srcBytes);
+  const newDoc   = await PDFDocument.create();
+
+  for (let i = 0; i < srcDoc.getPageCount(); i++) {
+    const srcPage = srcDoc.getPage(i);
+    const { width: srcW, height: srcH } = srcPage.getSize();
+
+    const scale  = Math.min(targetW / srcW, targetH / srcH);
+    const drawW  = srcW * scale;
+    const drawH  = srcH * scale;
+    const x      = (targetW - drawW) / 2;
+    const y      = (targetH - drawH) / 2;
+
+    const [embedded] = await newDoc.embedPdf(srcDoc, [i]);
+    const page = newDoc.addPage([targetW, targetH]);
+    page.drawPage(embedded, { x, y, width: drawW, height: drawH });
+  }
+
+  const outPath = pdfPath.replace(".pdf", `_${paperKey}.pdf`);
+  await writeFile(outPath, await newDoc.save());
+  return outPath;
+}
+
 // ── Detectar tamaño de papel del PDF ────────────────────────
-// Devuelve el nombre del formulario Windows que coincide con las dimensiones del PDF.
-// Si no reconoce el tamaño, devuelve null → se usa el predeterminado de la impresora.
 
 async function getPaperSizeName(pdfPath) {
   try {
@@ -191,10 +225,9 @@ async function getPaperSizeName(pdfPath) {
     const w = Math.min(width, height);
     const h = Math.max(width, height);
 
-    // Tolerancia de ±12 pts para PDFs con márgenes o rotación leve
-    if (Math.abs(w - 612) <= 12 && Math.abs(h - 792)  <= 12) return "Letter";    // Carta  8.5×11"
-    if (Math.abs(w - 612) <= 12 && Math.abs(h - 936)  <= 12) return "Oficio II"; // Oficio 8.5×13"
-    if (Math.abs(w - 612) <= 12 && Math.abs(h - 1008) <= 12) return "Legal";     // Legal  8.5×14"
+    if (Math.abs(w - 612) <= 12 && Math.abs(h - 792)  <= 12) return "Letter";
+    if (Math.abs(w - 612) <= 12 && Math.abs(h - 936)  <= 12) return "Oficio II";
+    if (Math.abs(w - 612) <= 12 && Math.abs(h - 1008) <= 12) return "Legal";
 
     return null;
   } catch {
@@ -296,6 +329,15 @@ async function processJob(job, attempt) {
     if (dlErr || !blob) throw new Error(`Descarga fallida: ${dlErr?.message}`);
     await writeFile(tempOriginal, Buffer.from(await blob.arrayBuffer()));
 
+    // Determinar tamaño de papel desde el trabajo (guardado por el usuario en el formulario)
+    const paperKey      = (job.paper_size ?? "carta").toLowerCase();  // "carta" | "oficio2"
+    const paperMeta     = PAPER_META[paperKey] ?? PAPER_META.carta;
+    const paperFormName = paperMeta.formName;                          // "Letter" | "Oficio II"
+    const trayName      = PAPER_TRAY_MAP[paperKey] ?? "";
+
+    await log("info", `  Tamaño de papel : ${paperFormName} (${paperKey})`);
+    await log("info", `  Bandeja         : ${trayName || "automática (driver)"}`);
+
     // Determinar el archivo a imprimir (conversión si es necesario)
     let fileToPrint = tempOriginal;
 
@@ -314,21 +356,23 @@ async function processJob(job, attempt) {
         if (handoutPdf !== convertedPdf) extraFiles.push(handoutPdf);
         fileToPrint = handoutPdf;
       }
+
+      // Redimensionar si el PDF resultante no coincide con el tamaño objetivo
+      const detectedForm = await getPaperSizeName(fileToPrint);
+      if (detectedForm !== paperFormName) {
+        await log("info", `  Redimensionando ${detectedForm ?? "desconocido"} → ${paperFormName}…`);
+        const resized = await resizePdfToTarget(fileToPrint, paperKey);
+        extraFiles.push(resized);
+        fileToPrint = resized;
+      }
     }
-
-    // Detectar tamaño de papel y bandeja, luego enviar a impresora
-    const paperSizeName = await getPaperSizeName(fileToPrint);
-    const trayName      = paperSizeName ? (PAPER_TRAY_MAP[paperSizeName] ?? "") : "";
-
-    await log("info", `  Tamaño de papel : ${paperSizeName ?? "predeterminado"}`);
-    await log("info", `  Bandeja         : ${trayName || "automática (driver)"}`);
 
     const printOptions = {
       printer: printer.system_name,
       copies:  job.copy_count,
       silent:  true,
-      ...(paperSizeName && { paperSize: paperSizeName }),
-      ...(trayName       && { bin:       trayName       }),
+      paperSize: paperFormName,
+      ...(trayName && { bin: trayName }),
     };
 
     await print(fileToPrint, printOptions);
