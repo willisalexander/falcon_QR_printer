@@ -611,7 +611,7 @@ export function PrintForm({
           const indices = Array.from({ length: toPage - fromPage + 1 }, (_, i) => fromPage - 1 + i);
           const pages   = await newDoc.copyPages(srcDoc, indices);
           pages.forEach(p => newDoc.addPage(p));
-          fileToUpload = new Blob([await newDoc.save()], { type: "application/pdf" });
+          fileToUpload = new Blob([new Uint8Array(await newDoc.save())], { type: "application/pdf" });
         }
 
         filePath = `jobs/${Date.now()}-${Math.random().toString(36).slice(2)}.${ext}`;
