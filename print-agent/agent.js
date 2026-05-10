@@ -228,18 +228,18 @@ async function convertToPdfWithLibreOffice(inputPath) {
 
   const infilter = infilterMap[ext] ?? "";
 
-  // < NUL redirige stdin desde el dispositivo vacío de Windows a nivel de shell (cmd.exe).
-  // Es el método más forzoso para que LibreOffice no pause con "Press Enter to continue".
-  const parts = [
-    `"${loPath}"`,
-    `"-env:UserInstallation=${profileUrl}"`,
-    "--headless", "--norestore", "--nofirststartwizard", "--nolockcheck", "--nologo",
-    ...(infilter ? [`"--infilter=${infilter}"`] : []),
+  // --invisible es más fuerte que --headless: impide cualquier ventana GUI de LibreOffice.
+  // spawnAsync usa stdio:["ignore",...] → stdin=NUL → LibreOffice no pausa con "Press Enter".
+  // windowsHide:true → CREATE_NO_WINDOW → sin consola visible.
+  const loArgs = [
+    `-env:UserInstallation=${profileUrl}`,
+    "--headless", "--invisible", "--norestore", "--nofirststartwizard", "--nolockcheck", "--nologo",
+    ...(infilter ? [`--infilter=${infilter}`] : []),
     "--convert-to", "pdf",
-    `"--outdir"`, `"${absOutDir}"`,
-    `"${absInput}"`,
+    "--outdir", absOutDir,
+    absInput,
   ];
-  await execAsync(`${parts.join(" ")} < NUL`, { windowsHide: true, timeout: 90000 });
+  await spawnAsync(loPath, loArgs, { timeout: 90000 });
 
   const base    = basename(inputPath, extname(inputPath));
   const pdfPath = join(absOutDir, `${base}.pdf`);
