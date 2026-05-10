@@ -82,18 +82,81 @@ function isImageFile(file: File) {
     /\.(jpe?g|png|webp)$/i.test(file.name);
 }
 
-// Extrae el número de páginas de un .docx buscando <Pages> en el ZIP sin descomprimir
+// Lee docProps/app.xml dentro del ZIP (.docx) y extrae <Pages>
 async function getDocxPageCount(file: File): Promise<number | null> {
   if (!file.name.toLowerCase().endsWith(".docx")) return null;
   try {
     const buffer = await file.arrayBuffer();
-    const text = new TextDecoder("utf-8", { fatal: false }).decode(buffer);
-    const match = text.match(/<Pages>(\d+)<\/Pages>/i);
-    if (match) {
-      const n = parseInt(match[1], 10);
-      if (!isNaN(n) && n > 0) return n;
+    const bytes  = new Uint8Array(buffer);
+    const view   = new DataView(buffer);
+
+    // 1. Buscar End of Central Directory (PK\x05\x06) desde el final
+    let eocd = -1;
+    for (let i = bytes.length - 22; i >= Math.max(0, bytes.length - 65558); i--) {
+      if (view.getUint32(i, true) === 0x06054B50) { eocd = i; break; }
     }
-  } catch { /* falla silenciosamente */ }
+    if (eocd === -1) return null;
+
+    const cdOffset = view.getUint32(eocd + 16, true);
+    const cdSize   = view.getUint32(eocd + 12, true);
+
+    // 2. Recorrer el directorio central buscando "docProps/app.xml"
+    let pos = cdOffset;
+    while (pos < cdOffset + cdSize) {
+      if (view.getUint32(pos, true) !== 0x02014B50) break;
+      const method        = view.getUint16(pos + 10, true);
+      const compSize      = view.getUint32(pos + 20, true);
+      const uncompSize    = view.getUint32(pos + 24, true);
+      const fnLen         = view.getUint16(pos + 28, true);
+      const exLen         = view.getUint16(pos + 30, true);
+      const cmLen         = view.getUint16(pos + 32, true);
+      const localOffset   = view.getUint32(pos + 42, true);
+      const name          = new TextDecoder().decode(bytes.slice(pos + 46, pos + 46 + fnLen));
+      pos += 46 + fnLen + exLen + cmLen;
+
+      if (name !== "docProps/app.xml") continue;
+
+      // 3. Leer cabecera local para encontrar el offset real de los datos
+      const localFnLen = view.getUint16(localOffset + 26, true);
+      const localExLen = view.getUint16(localOffset + 28, true);
+      const dataStart  = localOffset + 30 + localFnLen + localExLen;
+
+      let xmlBytes: Uint8Array;
+      if (method === 0) {
+        // STORE — sin compresión
+        xmlBytes = bytes.slice(dataStart, dataStart + uncompSize);
+      } else if (method === 8) {
+        // DEFLATE — descomprimir con DecompressionStream nativo del navegador
+        const compressed = bytes.slice(dataStart, dataStart + compSize);
+        const ds = new DecompressionStream("deflate-raw");
+        const writer = ds.writable.getWriter();
+        const reader = ds.readable.getReader();
+        writer.write(compressed);
+        writer.close();
+        const chunks: Uint8Array[] = [];
+        let total = 0;
+        for (;;) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          chunks.push(value); total += value.length;
+        }
+        xmlBytes = new Uint8Array(total);
+        let off = 0;
+        for (const c of chunks) { xmlBytes.set(c, off); off += c.length; }
+      } else {
+        return null;
+      }
+
+      // 4. Parsear XML y extraer <Pages>N</Pages>
+      const xml   = new TextDecoder().decode(xmlBytes);
+      const match = xml.match(/<Pages>(\d+)<\/Pages>/i);
+      if (match) {
+        const n = parseInt(match[1], 10);
+        if (n > 0) return n;
+      }
+      return null;
+    }
+  } catch { /* sin soporte o archivo dañado */ }
   return null;
 }
 
