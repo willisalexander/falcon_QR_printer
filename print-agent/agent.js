@@ -52,7 +52,7 @@ async function runPsScript(scriptContent) {
   try {
     await writeFile(scriptPath, scriptContent, "utf8");
     const { stdout, stderr } = await execAsync(
-      `powershell -NoProfile -ExecutionPolicy Bypass -File "${scriptPath}"`,
+      `powershell -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File "${scriptPath}"`,
       { timeout: 10000 }
     );
     return { stdout: stdout ?? "", stderr: stderr ?? "" };
@@ -193,7 +193,7 @@ async function convertToPdfWithLibreOffice(inputPath) {
   }
 
   const outDir = TEMP_DIR;
-  await execAsync(`"${loPath}" --headless --convert-to pdf --outdir "${outDir}" "${inputPath}"`);
+  await execAsync(`"${loPath}" --headless --norestore --nofirststartwizard --convert-to pdf --outdir "${outDir}" "${inputPath}"`);
 
   const base    = basename(inputPath, extname(inputPath));
   const pdfPath = join(outDir, `${base}.pdf`);
