@@ -235,10 +235,11 @@ async function convertToPdfWithLibreOffice(inputPath) {
     `"${inputPath.replace(/\\/g, "\\\\")}"`,
   ].join(",");
 
-  // Lanzar mediante Start-Process -WindowStyle Hidden para suprimir cualquier ventana/diálogo GUI
+  // Lanzar con Start-Process -WindowStyle Hidden y stdin redirigido a NUL
+  // para que LibreOffice lea EOF inmediatamente en lugar de pausar con "Press Enter"
   const ps = [
     `$a = @(${loArgsList})`,
-    `$p = Start-Process -FilePath '${loPath.replace(/'/g, "''")}' -ArgumentList $a -WindowStyle Hidden -PassThru`,
+    `$p = Start-Process -FilePath '${loPath.replace(/'/g, "''")}' -ArgumentList $a -WindowStyle Hidden -PassThru -RedirectStandardInput 'NUL'`,
     `if (-not $p.WaitForExit(60000)) { $p.Kill(); exit 1 }`,
     `exit $p.ExitCode`,
   ].join("\r\n");
