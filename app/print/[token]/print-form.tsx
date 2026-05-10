@@ -82,6 +82,21 @@ function isImageFile(file: File) {
     /\.(jpe?g|png|webp)$/i.test(file.name);
 }
 
+// Extrae el número de páginas de un .docx buscando <Pages> en el ZIP sin descomprimir
+async function getDocxPageCount(file: File): Promise<number | null> {
+  if (!file.name.toLowerCase().endsWith(".docx")) return null;
+  try {
+    const buffer = await file.arrayBuffer();
+    const text = new TextDecoder("utf-8", { fatal: false }).decode(buffer);
+    const match = text.match(/<Pages>(\d+)<\/Pages>/i);
+    if (match) {
+      const n = parseInt(match[1], 10);
+      if (!isNaN(n) && n > 0) return n;
+    }
+  } catch { /* falla silenciosamente */ }
+  return null;
+}
+
 // Detecta el tamaño del PDF en puntos y lo mapea a PaperSize
 function detectPaperSize(widthPts: number, heightPts: number): PaperSize | "otro" {
   const w = Math.min(widthPts, heightPts);
@@ -512,8 +527,14 @@ export function PrintForm({
       }
     } else if (wordFile) {
       setFiles([wordFile]);
-      setPageCount(1);
-      setRangeTo("1");
+      setIsConverting(true);
+      try {
+        const count = await getDocxPageCount(wordFile);
+        setPageCount(count ?? 1);
+        setRangeTo(String(count ?? 1));
+      } finally {
+        setIsConverting(false);
+      }
     } else {
       setImagesPerPage(1);
       setFiles(selected);
@@ -977,11 +998,30 @@ export function PrintForm({
                   </div>
                 )}
 
-                {/* Info Word */}
+                {/* Páginas Word — editable */}
                 {wordMode && (
-                  <p className="mt-3 text-xs text-gray-500">
-                    El precio final depende del número real de páginas del documento.
-                  </p>
+                  <div className="mt-3 rounded-lg border border-gray-200 bg-gray-50 p-3 space-y-2">
+                    <p className="text-xs font-medium text-gray-700">Número de páginas</p>
+                    <div className="flex items-center gap-3">
+                      <input
+                        type="number"
+                        min={1}
+                        max={500}
+                        value={pageCount}
+                        onChange={(e) => {
+                          const n = Math.max(1, parseInt(e.target.value) || 1);
+                          setPageCount(n);
+                          setRangeTo(String(n));
+                        }}
+                        className="w-24 rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                      />
+                      <p className="text-xs text-gray-500">
+                        {files[0]?.name.toLowerCase().endsWith(".docx")
+                          ? "Detectado automáticamente. Ajusta si es incorrecto."
+                          : "Ingresa el número de páginas del documento."}
+                      </p>
+                    </div>
+                  </div>
                 )}
               </>
             )}
@@ -1175,7 +1215,7 @@ export function PrintForm({
                 )}
                 <div className="flex justify-between">
                   <span>Hojas a imprimir:</span>
-                  <span>{wordMode ? "?" : effectivePageCount}</span>
+                  <span>{effectivePageCount}</span>
                 </div>
                 <div className="flex justify-between">
                   <span>Copias:</span><span>{currentCopyCount}</span>
@@ -1183,15 +1223,9 @@ export function PrintForm({
                 <div className="flex justify-between">
                   <span>Precio por hoja:</span><span>{formatCurrency(pricePerPage)}</span>
                 </div>
-                {wordMode ? (
-                  <p className="border-t border-blue-200 pt-1 text-xs text-blue-500">
-                    El precio final se calcula al imprimir (páginas desconocidas).
-                  </p>
-                ) : (
-                  <div className="flex justify-between border-t border-blue-200 pt-1 font-bold">
-                    <span>Total estimado:</span><span>{formatCurrency(estimatedTotal)}</span>
-                  </div>
-                )}
+                <div className="flex justify-between border-t border-blue-200 pt-1 font-bold">
+                  <span>Total estimado:</span><span>{formatCurrency(estimatedTotal)}</span>
+                </div>
               </div>
             </div>
           )}
