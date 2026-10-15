@@ -7,6 +7,8 @@ import { Modal } from "@/components/ui/modal";
 import { PrinterForm } from "./printer-form";
 import { setDefaultPrinter, togglePrinterActive, deletePrinter } from "./actions";
 import { cn } from "@/lib/utils";
+import { PAPER_LABELS } from "@/lib/agent/labels";
+import type { PaperKey } from "@/lib/agent/types";
 import type { Printer } from "@/types";
 
 interface PrintersClientProps {
@@ -127,6 +129,13 @@ export function PrintersClient({ printers }: PrintersClientProps) {
                   {printer.is_active ? "Activa" : "Inactiva"}
                 </span>
               </div>
+
+              {/* Capacidades declaradas para la asignación automática */}
+              <p className="mt-2 text-xs text-gray-600">
+                {(printer.paper_sizes ?? []).map((s) => PAPER_LABELS[s as PaperKey] ?? s).join(", ") || "Sin tamaños configurados"}
+                {printer.supports_duplex ? " · Dúplex" : " · Sin dúplex"}
+                {" · Prioridad "}{printer.priority ?? 100}
+              </p>
 
               {printer.location && (
                 <p className="mt-2 text-xs text-gray-500">📍 {printer.location}</p>

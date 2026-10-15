@@ -49,6 +49,29 @@ export interface Printer {
   is_default_color: boolean;
   location: string | null;
   notes: string | null;
+  // Capacidades declaradas para el flujo local (sql/008_local_reception.sql)
+  supports_color: boolean;
+  supports_duplex: boolean;
+  paper_sizes: string[];
+  trays: Record<string, string>;
+  priority: number;
+  capabilities_checked_at: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface PrinterRule {
+  id: string;
+  name: string;
+  priority: number;
+  enabled: boolean;
+  paper_size: "any" | "carta" | "a4" | "oficio2" | "legal";
+  color_mode: "any" | "bw" | "color";
+  duplex: "any" | "yes" | "no";
+  min_pages: number | null;
+  max_pages: number | null;
+  printer_id: string;
+  tray: string | null;
   created_at: string;
   updated_at: string;
 }

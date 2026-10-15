@@ -16,8 +16,18 @@ interface PeriodStat {
   pages: number;
 }
 
+interface LocalOrderRow {
+  id: string;
+  correlative: string;
+  customer_name: string;
+  total_price: number;
+  finished_at: string;
+  pages: number;
+}
+
 interface ReportsClientProps {
   jobs: PrintJob[];
+  localOrders: LocalOrderRow[];
   periodStats: PeriodStat[];
   bwRevenue: number;
   bwJobs: number;
@@ -31,6 +41,7 @@ interface ReportsClientProps {
 
 export function ReportsClient({
   jobs,
+  localOrders,
   periodStats,
   bwRevenue, bwJobs, bwPages,
   colorRevenue, colorJobs, colorPages,
@@ -49,8 +60,9 @@ export function ReportsClient({
   }
 
   function exportCsv() {
-    const headers = ["Correlativo", "Cliente", "Tipo", "Páginas", "Copias", "Total", "Estado", "Fecha"];
-    const rows = jobs.map((j) => [
+    const headers = ["Origen", "Correlativo", "Cliente", "Tipo", "Páginas", "Copias", "Total", "Estado", "Fecha"];
+    const rows: (string | number)[][] = jobs.map((j) => [
+      "QR",
       j.correlative,
       j.client_name,
       j.print_type === "bw" ? "B/N" : "Color",
@@ -60,6 +72,10 @@ export function ReportsClient({
       j.status,
       formatShortDate(j.created_at),
     ]);
+    // Pedidos locales: una fila por pedido entregado; "Páginas" es el total de hojas impresas.
+    for (const o of localOrders) {
+      rows.push(["Carpeta", o.correlative, o.customer_name, "", o.pages, "", o.total_price, "entregado", formatShortDate(o.finished_at)]);
+    }
     const csv = [headers, ...rows]
       .map((row) => row.map((v) => `"${String(v).replace(/"/g, '""')}"`).join(","))
       .join("\n");
@@ -101,7 +117,7 @@ export function ReportsClient({
             <Filter className="h-4 w-4" />
             Filtrar
           </Button>
-          <Button variant="outline" onClick={exportCsv} disabled={jobs.length === 0}>
+          <Button variant="outline" onClick={exportCsv} disabled={jobs.length === 0 && localOrders.length === 0}>
             <Download className="h-4 w-4" />
             Exportar CSV
           </Button>
@@ -141,11 +157,54 @@ export function ReportsClient({
         </div>
       </div>
 
+      {/* Pedidos entregados del flujo local */}
+      <div>
+        <h2 className="mb-1 text-base font-semibold text-gray-900">
+          Pedidos entregados {from || to ? "del período seleccionado" : "recientes"}
+          <span className="ml-2 text-sm font-normal text-gray-400">({localOrders.length})</span>
+        </h2>
+        <p className="mb-3 text-xs text-gray-500">
+          Recepción por carpeta. Un pedido cuenta como ingreso al marcarlo Entregado; los cancelados no suman.
+        </p>
+        <Card noPadding>
+          <div className="overflow-x-auto">
+            {localOrders.length === 0 ? (
+              <p className="px-4 py-10 text-center text-sm text-gray-400">
+                No hay pedidos entregados para el período seleccionado.
+              </p>
+            ) : (
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="border-b border-gray-100 bg-gray-50/50">
+                    {["Correlativo", "Cliente", "Páginas impresas", "Total", "Entregado"].map((h) => (
+                      <th key={h} className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wide text-gray-500">
+                        {h}
+                      </th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {localOrders.map((o) => (
+                    <tr key={o.id} className="border-b border-gray-50 last:border-0 hover:bg-gray-50/60">
+                      <td className="px-4 py-2.5 font-mono text-xs font-semibold text-blue-700">{o.correlative}</td>
+                      <td className="px-4 py-2.5 text-gray-900">{o.customer_name}</td>
+                      <td className="px-4 py-2.5 text-gray-600">{o.pages}</td>
+                      <td className="px-4 py-2.5 font-semibold text-gray-900">{formatCurrency(Number(o.total_price))}</td>
+                      <td className="px-4 py-2.5 text-xs text-gray-500">{formatShortDate(o.finished_at)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+          </div>
+        </Card>
+      </div>
+
       {/* Tabla de trabajos */}
       <div>
         <div className="mb-3 flex items-center justify-between">
           <h2 className="text-base font-semibold text-gray-900">
-            Trabajos {from || to ? "del período seleccionado" : "recientes"}
+            Trabajos QR {from || to ? "del período seleccionado" : "recientes"}
             <span className="ml-2 text-sm font-normal text-gray-400">({jobs.length})</span>
           </h2>
         </div>

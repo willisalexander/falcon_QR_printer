@@ -1,291 +1,209 @@
-# Print QR System
+# Falcon QR Printer — El Arrecife
 
-Sistema web de impresión mediante código QR. Los clientes escanean un QR, suben su archivo y el administrador gestiona las impresiones desde un panel privado. Un agente local envía los trabajos aprobados directamente a las impresoras.
+Sistema de recepción, gestión e impresión local de documentos para la librería e impresiones El Arrecife.
+
+El operador descarga los documentos que el cliente envía por WhatsApp Business Desktop; el sistema los detecta,
+los convierte a PDF, los analiza, los asocia al cliente y los imprime en la impresora correcta.
+**Todo el procesamiento documental ocurre en una sola computadora Windows. Supabase guarda únicamente información
+administrativa: ningún documento, PDF, miniatura ni vista previa sale de la computadora.**
+
+- [Instalación en Windows](docs/INSTALACION_WINDOWS.md)
+- [Manual de operación](docs/OPERACION.md)
+- [Actualización, respaldo y recuperación](docs/ACTUALIZACION_Y_RECUPERACION.md)
 
 ## Arquitectura
 
 ```
-┌─────────────────────────────────────────────────────────┐
-│                      CLIENTE                            │
-│  Escanea QR → /print/[token] → Sube archivo            │
-└─────────────────────┬───────────────────────────────────┘
-                      │ HTTPS
-┌─────────────────────▼───────────────────────────────────┐
-│                  NEXT.JS (App Router)                   │
-│  /print/[token]  →  Formulario público                  │
-│  /admin/*        →  Panel administrativo                │
-└─────────────────────┬───────────────────────────────────┘
-                      │ Supabase SDK
-┌─────────────────────▼───────────────────────────────────┐
-│                    SUPABASE                             │
-│  Auth  │  PostgreSQL  │  Storage  │  RLS               │
-└─────────────────────┬───────────────────────────────────┘
-                      │ Polling (Service Role Key)
-┌─────────────────────▼───────────────────────────────────┐
-│             AGENTE LOCAL (Node.js)                      │
-│  PC del negocio — Descarga PDF → Envía a impresora      │
-└─────────────────────────────────────────────────────────┘
+                       UNA SOLA COMPUTADORA WINDOWS
+┌──────────────────────────────────────────────────────────────────────────┐
+│  WhatsApp Business Desktop ── "Guardar como…" ──► C:\ElArrecife\Entradas │
+│                                                          │               │
+│  ┌───────────────────────── AGENTE LOCAL (Node.js) ──────▼────────────┐  │
+│  │ Monitor de carpeta → Conversión (LibreOffice) → Análisis PDF       │  │
+│  │        │                                              │            │  │
+│  │        ▼                                              ▼            │  │
+│  │  SQLite local  ◄──── pedidos, cola, intentos ───► Motor de reglas  │  │
+│  │  (fuente de verdad)                                   │            │  │
+│  │        │                                              ▼            │  │
+│  │  Retención 30 días          Cola de impresión → pdf-to-printer ──────────► Impresoras
+│  │        │                                                           │  │
+│  │  API http://127.0.0.1:47821 (credencial firmada + origen permitido)│  │
+│  └────────┬──────────────────────────────────────────────┬────────────┘  │
+│           │ estado en vivo, vista previa, órdenes        │               │
+│  ┌────────▼───────────────────┐                          │               │
+│  │ Navegador: panel /admin/*  │                          │               │
+│  └────────┬───────────────────┘                          │               │
+└───────────┼──────────────────────────────────────────────┼───────────────┘
+            │ login, impresoras, reglas, ajustes           │ SOLO METADATOS
+   ┌────────▼──────────────────────────────────────────────▼────────┐
+   │ SUPABASE:  Auth · PostgreSQL (RLS)                              │
+   │ usuarios, clientes, pedidos, impresoras, reglas, estados,       │
+   │ precios, auditoría.  ✗ Sin documentos. ✗ Sin Storage.           │
+   └─────────────────────────────────────────────────────────────────┘
 ```
 
-## Stack Tecnológico
+### Decisiones de diseño
 
-- **Frontend/Backend**: Next.js 16 (App Router) + TypeScript
-- **Base de datos**: Supabase (PostgreSQL)
-- **Auth**: Supabase Auth
-- **Storage**: Supabase Storage
-- **Estilos**: Tailwind CSS
-- **Formularios**: React Hook Form + Zod
-- **PDF**: pdf-lib
-- **Agente**: Node.js + pdf-to-printer
-- **Iconos**: Lucide React
+| Decisión | Motivo |
+|---|---|
+| **SQLite local es la fuente de verdad** de documentos y cola; Supabase recibe una copia de los metadatos | El negocio sigue recibiendo e imprimiendo sin internet; al reconectar se sincroniza lo pendiente |
+| **SQLite integrado en Node** (`node:sqlite`, Node ≥ 22.13) | Sin binarios nativos que compilar en la PC del negocio |
+| El archivo se **mueve** fuera de `Entradas` al registrarlo y se guarda por **identificador** | Un archivo no puede detectarse dos veces; nombres repetidos no se pisan |
+| El panel habla con el agente por **localhost** con una credencial HMAC de corta duración que entrega el servidor Next.js | El navegador nunca ve la Service Role Key; el agente la verifica sin internet |
+| El agente escucha **solo en 127.0.0.1**, valida `Origin` y `Host`, y solo acepta identificadores (nunca rutas) | No es un servicio de documentos accesible desde la red |
+| **Sin reintentos automáticos de impresión**; un envío interrumpido queda "incierto" | Evitar copias dobles |
+| "Enviado a cola Windows" ≠ "Impreso confirmado" | Que Windows acepte el trabajo no prueba que salió el papel |
+| El tamaño se pide con el **formulario real del driver**, buscado por medidas | Oficio II no se confunde con Legal aunque el driver lo llame distinto |
+| **Nunca se escala** sin una regla elegida por el operador | Evitar impresiones recortadas o reducidas por sorpresa |
+| La carpeta vigilada se define en el `.env` del agente, no desde el panel | Nadie puede redirigir remotamente qué carpeta lee o borra el agente |
+| Flujo QR anterior aislado en `print-agent/src/legacy-qr.js`, **apagado por defecto** | Era el único que usa Supabase Storage; no se eliminó |
 
-## Estructura del Proyecto
+## Stack tecnológico
+
+- **Panel**: Next.js 16 (App Router) + TypeScript + Tailwind CSS
+- **Datos administrativos y auth**: Supabase (PostgreSQL + RLS + Auth)
+- **Agente**: Node.js ≥ 22.13 · `node:sqlite` · chokidar · pdf-lib · pdf-to-printer (SumatraPDF)
+- **Conversión**: LibreOffice headless, perfil aislado por conversión, macros bloqueadas
+- **Servicio**: PM2 + tarea programada de Windows
+
+## Estructura del proyecto
 
 ```
 /
-├── app/
-│   ├── print/[token]/        # Página pública (formulario QR)
-│   │   ├── page.tsx
-│   │   ├── print-form.tsx
-│   │   └── not-found.tsx
-│   ├── admin/
-│   │   ├── layout.tsx        # Layout con sidebar
-│   │   ├── login/page.tsx
-│   │   ├── dashboard/page.tsx
-│   │   ├── print-jobs/
-│   │   ├── printers/
-│   │   ├── qr/
-│   │   ├── users/
-│   │   ├── reports/
-│   │   └── settings/
-│   ├── layout.tsx
-│   ├── page.tsx              # Redirige a /admin/login
-│   └── globals.css
-├── components/
-│   ├── ui/                   # Button, Input, Card, Badge
-│   └── admin/                # Sidebar, Header
-├── lib/
-│   ├── supabase/
-│   │   ├── client.ts         # Cliente del navegador
-│   │   └── server.ts         # Cliente del servidor
-│   └── utils.ts
-├── types/
-│   ├── database.ts           # Tipos de tablas DB
-│   └── index.ts
-├── sql/
-│   ├── 001_schema.sql        # Tablas y enums
-│   ├── 002_functions.sql     # Funciones y triggers
-│   ├── 003_rls.sql           # Row Level Security + Storage
-│   └── 004_seed.sql          # Datos iniciales
-├── print-agent/              # Agente Node.js local
-│   ├── agent.js
-│   ├── package.json
-│   └── .env.example
-├── middleware.ts             # Protección de rutas
-└── .env.example
+├── app/admin/
+│   ├── reception/        # Recepción de documentos (bandeja, clientes, pedidos, vista previa)
+│   ├── print-queue/      # Cola de impresión
+│   ├── history/          # Pedidos anteriores, reimpresión, auditoría, errores, eliminados
+│   ├── rules/            # Reglas de asignación de impresora
+│   ├── printers/         # Impresoras y capacidades
+│   ├── settings/         # Ajustes (local + precios + QR)
+│   ├── agent-session.ts  # Entrega la credencial del agente al personal autenticado
+│   └── print-jobs/, qr/, reports/, users/, dashboard/   # módulos existentes
+├── app/print/[token]/    # Formulario público por QR (flujo heredado)
+├── lib/agent/            # Cliente del agente, tipos y etiquetas
+├── sql/                  # 001–006 originales · 007 deriva de esquema · 008 recepción local
+├── docs/                 # Manuales
+└── print-agent/
+    ├── agent.js          # Punto de entrada
+    ├── src/
+    │   ├── intake.js     # Monitor de carpeta
+    │   ├── processor.js  # Cola de conversión y análisis
+    │   ├── converter.js  # LibreOffice
+    │   ├── analyzer.js   # Validación y análisis de PDF
+    │   ├── paper.js      # Tamaños de papel
+    │   ├── planner.js    # Motor de reglas
+    │   ├── orders.js     # Clientes, pedidos, autorización, reimpresión
+    │   ├── queue.js      # Cola de impresión y control de duplicados
+    │   ├── printers.js   # Impresoras de Windows
+    │   ├── retention.js  # Retención de 30 días
+    │   ├── sync.js       # Sincronización de metadatos con Supabase
+    │   ├── api.js        # Servicio localhost para el panel
+    │   ├── auth.js, db.js, store.js, files.js, config.js, util.js, app.js
+    │   └── legacy-qr.js  # Flujo QR anterior (apagado por defecto)
+    ├── scripts/          # install-windows.ps1, backup.js
+    └── test/             # Pruebas automatizadas
 ```
 
-## Estados de un trabajo de impresión
+Almacenamiento local (se crea solo):
 
 ```
-uploaded → pending_approval ──→ rejected
-         ↓
-       approved → printing → printed → paid
-                    ↓
-                  failed
+C:\ElArrecife\
+├── Entradas\      ← aquí guarda el operador las descargas de WhatsApp
+├── Procesando\    ← tránsito (segundos)
+├── Originales\<id>\original.docx
+├── PDF\<id>\document.pdf
+├── Completados\<id>\   ← pedidos entregados, hasta su eliminación
+├── Errores\<id>\
+├── Temporales\  Logs\  Datos\agente.db  Respaldos\
 ```
 
-## Instalación y Configuración
+## Estados
 
-### 1. Requisitos
+```
+Documento:  recibido → en cola → convirtiendo → listo ──► (pedido entregado) ──► eliminado a los 30 días
+                                      └──► error ──(reintentar)──┘
 
-- Node.js 18+
-- Cuenta en [Supabase](https://supabase.com) (gratuita)
-- Git
+Trabajo:    listo para imprimir → enviando → enviado a cola Windows → imprimiendo → impreso confirmado
+                 │                    │              │
+                 └─► cancelado        ├─► error ◄────┘ (el operador indica que no salió)
+                                      └─► envío incierto (decide el operador)
+```
 
-### 2. Clonar el repositorio
+## Puesta en marcha
+
+Producción: siga [docs/INSTALACION_WINDOWS.md](docs/INSTALACION_WINDOWS.md).
+
+Desarrollo:
 
 ```bash
-git clone https://github.com/tu-usuario/print-qr-system.git
-cd print-qr-system
-```
+# Base de datos: ejecutar sql/001 … 008 en el SQL Editor de Supabase
 
-### 3. Instalar dependencias de la web app
-
-```bash
+# Panel
+cp .env.example .env.local      # Supabase + AGENT_SECRET_TOKEN
 npm install
-```
+npm run dev                     # http://localhost:3000/admin/login
 
-### 4. Configurar Supabase
-
-1. Crea un nuevo proyecto en [supabase.com](https://supabase.com)
-2. Ve a **SQL Editor** y ejecuta los scripts en orden:
-   ```
-   sql/001_schema.sql
-   sql/002_functions.sql
-   sql/003_rls.sql
-   sql/004_seed.sql
-   ```
-3. Copia las credenciales desde **Settings → API**
-
-### 5. Variables de entorno
-
-```bash
-cp .env.example .env.local
-```
-
-Edita `.env.local`:
-
-```env
-NEXT_PUBLIC_SUPABASE_URL=https://tu-proyecto.supabase.co
-NEXT_PUBLIC_SUPABASE_ANON_KEY=tu-anon-key
-SUPABASE_SERVICE_ROLE_KEY=tu-service-role-key
-NEXT_PUBLIC_APP_URL=http://localhost:3000
-```
-
-### 6. Crear el primer usuario administrador
-
-1. Ve a Supabase Dashboard → **Authentication → Users**
-2. Crea un usuario con **Invite user** o **Add user**
-3. En **SQL Editor**, asigna el rol admin:
-   ```sql
-   UPDATE profiles SET role = 'admin' WHERE email = 'tu@email.com';
-   ```
-
-### 7. Levantar el servidor de desarrollo
-
-```bash
-npm run dev
-```
-
-Abre [http://localhost:3000/admin/login](http://localhost:3000/admin/login)
-
----
-
-## Agente Local de Impresión
-
-El agente es un proceso Node.js que corre en el PC donde están conectadas las impresoras.
-
-### Instalación
-
-```bash
+# Agente
 cd print-agent
+cp .env.example .env            # mismo AGENT_SECRET_TOKEN; PRINT_DRIVER=dryrun para no imprimir
 npm install
-cp .env.example .env
-```
-
-Edita `print-agent/.env`:
-
-```env
-SUPABASE_URL=https://tu-proyecto.supabase.co
-SUPABASE_SERVICE_ROLE_KEY=tu-service-role-key
-POLLING_INTERVAL_MS=5000
-```
-
-### Configurar impresoras en el panel admin
-
-1. Ve a `/admin/printers`
-2. Añade tus impresoras con el **nombre exacto del sistema**
-3. Para ver los nombres de impresoras disponibles:
-   ```bash
-   cd print-agent && node -e "import('pdf-to-printer').then(m => m.getPrinters().then(console.log))"
-   ```
-
-### Iniciar el agente
-
-```bash
-cd print-agent
 npm start
 ```
 
-Para mantener el agente corriendo en producción, usa [PM2](https://pm2.keymetrics.io/):
+Primer administrador: cree el usuario en Supabase → Authentication y luego
+`UPDATE profiles SET role = 'admin' WHERE email = 'tu@email.com';`
+
+## Pruebas
 
 ```bash
-npm install -g pm2
-pm2 start agent.js --name "print-agent"
-pm2 save
-pm2 startup
+cd print-agent
+npm test
 ```
 
----
+Las pruebas usan carpetas temporales, impresoras simuladas y un Supabase simulado: no imprimen ni tocan datos reales.
+Resultado en el equipo de desarrollo (Node 24, Windows 11): **44 pruebas — 43 aprobadas, 0 fallidas, 1 omitida**
+(conversión real con LibreOffice, que no estaba instalado).
 
-## GitHub — Control de Versiones
+| # | Prueba requerida | Cobertura |
+|---|---|---|
+| 1–2 | PDF en la carpeta / detección automática | Automatizada |
+| 3 | Descarga incompleta | Automatizada |
+| 4–5 | Conversión DOC y DOCX | Flujo automatizado con convertidor simulado · **conversión real pendiente** (requiere LibreOffice) |
+| 6 | Validación de PDF | Automatizada |
+| 7–10 | Carta, Oficio II, Legal, A4 | Automatizada |
+| 11 | Páginas mixtas | Automatizada |
+| 12 | Quince archivos en un minuto | Automatizada (15 archivos listos en ≈ 1.7 s) |
+| 13 | Nombres iguales | Automatizada |
+| 14 | Varios documentos a un cliente | Automatizada |
+| 15–16 | Impresora manual / por reglas | Automatizada |
+| 17–18 | Dúplex / varias copias | Opciones enviadas al driver: automatizada · **salida física pendiente** |
+| 19 | Impresora desconectada | Automatizada (simulada) · **pendiente con impresora real** |
+| 20 | Reinicio del agente | Automatizada |
+| 21 | Reimpresión local | Automatizada |
+| 22 | Eliminación a los 30 días | Automatizada |
+| 23 | Caída de internet | Automatizada |
+| 24 | Nada se sube a Storage | Automatizada (análisis estático + cliente que falla si se toca Storage) |
+| 25 | Flujo QR intacto | Sintaxis y funciones del agente QR verificadas; `next build` correcto · **prueba de extremo a extremo pendiente** (requiere Supabase) |
 
-### Crear repositorio
+Pendiente de validar en la computadora real: impresión física en cada impresora, bandejas, formulario Oficio II,
+seguimiento del trabajo en la cola de Windows, conversión con LibreOffice, y el recorrido completo del panel con
+Supabase.
 
-```bash
-git init
-git add .
-git commit -m "feat: initial Phase 1 — architecture, DB, auth, public form"
-git branch -M main
-git remote add origin https://github.com/tu-usuario/print-qr-system.git
-git push -u origin main
-```
+## Flujo QR anterior
 
-### Estrategia de ramas
-
-```
-main              ← producción estable
-├── develop       ← integración
-│   ├── feat/admin-print-jobs
-│   ├── feat/reports
-│   ├── feat/print-agent
-│   └── fix/...
-```
-
-### Commits sugeridos por fase
-
-```bash
-# Fase 1 (ya completada)
-git commit -m "feat: Phase 1 — DB schema, RLS, admin login, public QR form"
-
-# Fase 2
-git commit -m "feat: Phase 2 — admin print jobs CRUD, printer management"
-
-# Fase 3
-git commit -m "feat: Phase 3 — QR management, reports module"
-
-# Fase 4
-git commit -m "feat: Phase 4 — image to PDF conversion, thumbnails"
-
-# Fase 5
-git commit -m "feat: Phase 5 — local print agent with polling"
-```
-
----
-
-## Fases del Proyecto
-
-| Fase | Descripción | Estado |
-|------|------------|--------|
-| **1** | Arquitectura, DB, Auth, Login admin, Formulario QR | ✅ Completada |
-| **2** | Panel admin: trabajos, impresoras, configuración | 🔜 Pendiente |
-| **3** | QR dinámico, módulo de reportes | 🔜 Pendiente |
-| **4** | Conversión imágenes→PDF, miniaturas, vista previa | 🔜 Pendiente |
-| **5** | Agente local de impresión (producción) | 🔜 Pendiente |
-
----
-
-## Correlativo Diario
-
-Formato: `IMP-YYYYMMDD-NNN`
-
-Ejemplo: `IMP-20260507-001`, `IMP-20260507-002`
-
-Se genera automáticamente mediante la función `generate_daily_correlative()` en PostgreSQL.
-
----
+El formulario público `/print/[token]`, la pantalla `/display` y **Trabajos QR** se conservan. Ese flujo sube los
+archivos a Supabase Storage, por lo que su agente está apagado por defecto. Para usarlo: `LEGACY_QR_ENABLED=true` en
+`print-agent/.env`. No comparte tablas ni cola con el flujo por carpeta.
 
 ## Seguridad
 
-- **RLS** activado en todas las tablas
-- **Anon key** solo permite INSERT en `print_jobs` (formulario público)
-- **Service role key** solo en el agente local (nunca en el cliente)
-- Tokens QR son hashes de 64 caracteres hexadecimales
-- Middleware de Next.js valida sesión en todas las rutas `/admin/*`
-- Validación de archivos: tipo MIME + tamaño configurado
-
----
+- **RLS** en todas las tablas. Las tablas del flujo local solo admiten lectura del personal; escribe únicamente el
+  agente con la Service Role Key.
+- La **Service Role Key** vive solo en el servidor del panel y en `print-agent/.env`; nunca llega al navegador.
+- El agente escucha solo en `127.0.0.1`, exige credencial firmada, origen permitido y cabecera `Host` local.
+- El navegador nunca envía ni recibe rutas del disco: solo identificadores de documento.
+- Activar el modo automático requiere rol administrador; apagarlo, cualquier miembro del personal.
+- Los documentos se eliminan con el borrado normal de Windows: **no es un borrado irrecuperable del disco**.
 
 ## Licencia
 

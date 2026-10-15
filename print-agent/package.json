@@ -1,21 +1,24 @@
 {
-  "name": "print-qr-agent",
-  "version": "2.0.0",
-  "description": "Agente local de impresión para Print QR System",
+  "name": "falcon-print-agent",
+  "version": "3.0.0",
+  "description": "Agente local de recepción, conversión e impresión — Falcon QR Printer / El Arrecife",
   "type": "module",
   "main": "agent.js",
   "engines": {
-    "node": ">=18"
+    "node": ">=22.13"
   },
   "scripts": {
     "start": "node agent.js",
     "dev": "node --watch agent.js",
+    "test": "node --test --test-concurrency=1 --test-timeout=90000 \"test/*.test.js\"",
+    "backup": "node scripts/backup.js",
     "pm2:start": "pm2 start ecosystem.config.cjs",
     "pm2:stop": "pm2 stop print-agent",
     "pm2:logs": "pm2 logs print-agent"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.48.1",
+    "chokidar": "^4.0.3",
     "dotenv": "^16.4.7",
     "pdf-lib": "^1.17.1",
     "pdf-to-printer": "^5.1.2"

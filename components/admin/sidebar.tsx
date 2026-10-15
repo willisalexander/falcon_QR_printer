@@ -12,6 +12,10 @@ import {
   BarChart3,
   LogOut,
   Monitor,
+  Inbox,
+  ListOrdered,
+  History,
+  GitBranch,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { createClient } from "@/lib/supabase/client";
@@ -19,8 +23,12 @@ import { useRouter } from "next/navigation";
 
 const navItems = [
   { href: "/admin/dashboard", label: "Dashboard", icon: LayoutDashboard },
-  { href: "/admin/print-jobs", label: "Trabajos", icon: FileText },
+  { href: "/admin/reception", label: "Recepción", icon: Inbox },
+  { href: "/admin/print-queue", label: "Cola de impresión", icon: ListOrdered },
+  { href: "/admin/history", label: "Historial", icon: History },
   { href: "/admin/printers", label: "Impresoras", icon: Printer },
+  { href: "/admin/rules", label: "Reglas", icon: GitBranch },
+  { href: "/admin/print-jobs", label: "Trabajos QR", icon: FileText },
   { href: "/admin/qr", label: "Código QR", icon: QrCode },
   { href: "/admin/users", label: "Usuarios", icon: Users },
   { href: "/admin/reports", label: "Reportes", icon: BarChart3 },

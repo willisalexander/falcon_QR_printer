@@ -5,6 +5,8 @@ const config: Config = {
     "./pages/**/*.{js,ts,jsx,tsx,mdx}",
     "./components/**/*.{js,ts,jsx,tsx,mdx}",
     "./app/**/*.{js,ts,jsx,tsx,mdx}",
+    // Las etiquetas de estado del flujo local definen sus colores aquí
+    "./lib/**/*.{js,ts,jsx,tsx}",
   ],
   theme: {
     extend: {

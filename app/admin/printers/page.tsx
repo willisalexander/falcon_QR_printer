@@ -21,7 +21,9 @@ export default async function PrintersPage() {
       <div className="flex-1 overflow-y-auto p-6">
         <div className="mb-2">
           <p className="text-sm text-gray-500">
-            Registra las impresoras conectadas y define cuál usar por defecto para blanco y negro y color.
+            Registra las impresoras conectadas, los tamaños de papel que tienen cargados y sus capacidades.
+            La impresora de cada trabajo se elige con las <a href="/admin/rules" className="text-blue-600 underline">reglas de impresión</a>;
+            los valores “por defecto” solo aplican al flujo QR anterior.
           </p>
         </div>
         <PrintersClient printers={(printers ?? []) as Printer[]} />

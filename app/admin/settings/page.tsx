@@ -1,6 +1,7 @@
 import { createClient } from "@/lib/supabase/server";
 import { AdminHeader } from "@/components/admin/header";
 import { SettingsForm } from "./settings-form";
+import { LocalSettingsForm } from "./local-settings-form";
 import type { Profile, SystemSettings } from "@/types";
 import type { Metadata } from "next";
 
@@ -35,8 +36,12 @@ export default async function SettingsPage() {
     <>
       <AdminHeader profile={profile as Profile} title="Configuración" />
       <div className="flex-1 overflow-y-auto p-6">
-        <div className="max-w-2xl">
-          <SettingsForm settings={settings} />
+        <div className="max-w-2xl space-y-10">
+          <LocalSettingsForm settings={raw} />
+          <div>
+            <h2 className="mb-3 text-base font-semibold text-gray-900">Precios y sistema QR</h2>
+            <SettingsForm settings={settings} />
+          </div>
         </div>
       </div>
     </>

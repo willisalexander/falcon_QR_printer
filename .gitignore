@@ -5,6 +5,12 @@
 /print-agent/tmp/
 /print-agent/logs/
 
+# Documentos de clientes y registro local — NUNCA al repositorio
+/ElArrecife/
+*.db
+*.db-wal
+*.db-shm
+
 # Next.js
 /.next/
 /out/

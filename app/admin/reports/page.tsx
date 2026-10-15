@@ -1,6 +1,10 @@
 import { createClient } from "@/lib/supabase/server";
 import { AdminHeader } from "@/components/admin/header";
 import { ReportsClient } from "./reports-client";
+import {
+  dayEndGT, dayStartGT, fetchDeliveredOrders, localByColor, localPages, localRevenue, periodStartsGT,
+  type DeliveredOrder,
+} from "@/lib/local-revenue";
 import type { Profile, PrintJob } from "@/types";
 import type { Metadata } from "next";
 
@@ -27,12 +31,8 @@ export default async function ReportsPage({ searchParams }: PageProps) {
   const supabase = await createClient();
   const { data: { user } } = await supabase.auth.getUser();
 
-  const now = new Date();
-
-  // Inicia las 4 consultas en paralelo
-  const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate()).toISOString();
-  const startOfWeek = new Date(now.getFullYear(), now.getMonth(), now.getDate() - now.getDay()).toISOString();
-  const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1).toISOString();
+  // Todos los cortes de fecha según la hora de Guatemala, corra donde corra el panel
+  const { today: startOfToday, week: startOfWeek, month: startOfMonth } = periodStartsGT();
 
   // Query principal (filtrada si hay from/to, o últimos 200 si no)
   let query = supabase
@@ -40,17 +40,29 @@ export default async function ReportsPage({ searchParams }: PageProps) {
     .select("*")
     .order("created_at", { ascending: false });
 
-  if (from) query = query.gte("created_at", `${from}T00:00:00`);
-  if (to) query = query.lte("created_at", `${to}T23:59:59`);
+  if (from) query = query.gte("created_at", dayStartGT(from));
+  if (to) query = query.lte("created_at", dayEndGT(to));
   if (!from && !to) query = query.limit(200);
 
-  const [{ data: profileData }, { data: allData }, { data: todayData }, { data: weekData }, { data: monthData }] =
+  // Pedidos entregados del flujo local (recepción por carpeta), por fecha de entrega
+  const localRange = from || to
+    ? { since: from ? dayStartGT(from) : undefined, until: to ? dayEndGT(to) : undefined }
+    : { limit: 200 };
+
+  const [
+    { data: profileData }, { data: allData }, { data: todayData }, { data: weekData }, { data: monthData },
+    localAll, localToday, localWeek, localMonth,
+  ] =
     await Promise.all([
       supabase.from("profiles").select("*").eq("id", user!.id).single(),
       query,
       supabase.from("print_jobs").select("*").gte("created_at", startOfToday),
       supabase.from("print_jobs").select("*").gte("created_at", startOfWeek),
       supabase.from("print_jobs").select("*").gte("created_at", startOfMonth),
+      fetchDeliveredOrders(supabase, localRange),
+      fetchDeliveredOrders(supabase, { since: startOfToday }),
+      fetchDeliveredOrders(supabase, { since: startOfWeek }),
+      fetchDeliveredOrders(supabase, { since: startOfMonth }),
     ]);
 
   const jobs = (allData ?? []) as PrintJob[];
@@ -58,15 +70,24 @@ export default async function ReportsPage({ searchParams }: PageProps) {
   const week = (weekData ?? []) as PrintJob[];
   const month = (monthData ?? []) as PrintJob[];
 
+  // QR: cuenta lo marcado como pagado. Local: cuenta lo entregado.
+  const period = (label: string, qr: PrintJob[], local: DeliveredOrder[]) => ({
+    label,
+    jobs: qr.length + local.length,
+    revenue: sumRevenue(qr) + localRevenue(local),
+    pages: sumPages(qr) + localPages(local),
+  });
   const periodStats = [
-    { label: "Hoy",         jobs: today.length,  revenue: sumRevenue(today),  pages: sumPages(today) },
-    { label: "Esta semana", jobs: week.length,   revenue: sumRevenue(week),   pages: sumPages(week) },
-    { label: "Este mes",    jobs: month.length,  revenue: sumRevenue(month),  pages: sumPages(month) },
-    { label: "Total",       jobs: jobs.length,   revenue: sumRevenue(jobs),   pages: sumPages(jobs) },
+    period("Hoy", today, localToday),
+    period("Esta semana", week, localWeek),
+    period("Este mes", month, localMonth),
+    period("Total", jobs, localAll),
   ];
 
   const bwJobs = jobs.filter((j) => j.print_type === "bw");
   const colorJobs = jobs.filter((j) => j.print_type === "color");
+  const localBw = localByColor(localAll, "bw");
+  const localColor = localByColor(localAll, "color");
 
   return (
     <>
@@ -75,12 +96,16 @@ export default async function ReportsPage({ searchParams }: PageProps) {
         <ReportsClient
           jobs={jobs}
           periodStats={periodStats}
-          bwRevenue={sumRevenue(bwJobs)}
-          bwJobs={bwJobs.length}
-          bwPages={sumPages(bwJobs)}
-          colorRevenue={sumRevenue(colorJobs)}
-          colorJobs={colorJobs.length}
-          colorPages={sumPages(colorJobs)}
+          localOrders={localAll.map(({ reception_print_jobs, ...o }) => ({
+            ...o,
+            pages: localPages([{ ...o, reception_print_jobs }]),
+          }))}
+          bwRevenue={sumRevenue(bwJobs) + localBw.revenue}
+          bwJobs={bwJobs.length + localBw.jobs}
+          bwPages={sumPages(bwJobs) + localBw.pages}
+          colorRevenue={sumRevenue(colorJobs) + localColor.revenue}
+          colorJobs={colorJobs.length + localColor.jobs}
+          colorPages={sumPages(colorJobs) + localColor.pages}
           from={from ?? ""}
           to={to ?? ""}
         />

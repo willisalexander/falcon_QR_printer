@@ -14,6 +14,51 @@ const settingsSchema = z.object({
   business_name:               z.string().min(1).max(100),
 });
 
+// Ajustes del flujo local (recepción por carpeta). El agente los lee de esta tabla.
+const localSettingsSchema = z.object({
+  retention_days:         z.coerce.number().int().min(1, "Mínimo 1 día").max(3650),
+  local_max_file_size_mb: z.coerce.number().int().min(1).max(500),
+  convert_timeout_sec:    z.coerce.number().int().min(10, "Mínimo 10 segundos").max(900),
+  convert_concurrency:    z.coerce.number().int().min(1).max(4),
+  paper_tolerance_pt:     z.coerce.number().min(1).max(20),
+  file_stability_ms:      z.coerce.number().int().min(500, "Mínimo 500 ms").max(60000),
+  printer_wait_min:       z.coerce.number().int().min(1).max(240),
+  auto_confirm_spooler:   z.enum(["true", "false"]),
+});
+
+export async function updateLocalSettings(formData: FormData) {
+  const supabase = await createClient();
+  const { data: { user } } = await supabase.auth.getUser();
+  if (!user) return { success: false, error: "No autorizado" };
+
+  const { data: profile } = await supabase
+    .from("profiles")
+    .select("role, is_active")
+    .eq("id", user.id)
+    .single();
+
+  if (!profile?.is_active || profile.role !== "admin") {
+    return { success: false, error: "Se requieren permisos de administrador" };
+  }
+
+  const parsed = localSettingsSchema.safeParse(
+    Object.fromEntries(Object.keys(localSettingsSchema.shape).map((k) => [k, formData.get(k)]))
+  );
+  if (!parsed.success) {
+    return { success: false, error: parsed.error.errors[0].message };
+  }
+
+  for (const [key, value] of Object.entries(parsed.data)) {
+    const { error } = await supabase
+      .from("settings")
+      .upsert({ key, value: String(value) }, { onConflict: "key" });
+    if (error) return { success: false, error: error.message };
+  }
+
+  revalidatePath("/admin/settings");
+  return { success: true };
+}
+
 export async function updateSettings(formData: FormData) {
   const supabase = await createClient();
   const { data: { user } } = await supabase.auth.getUser();

@@ -11,6 +11,11 @@ import {
   AlertTriangle,
 } from "lucide-react";
 import { formatCurrency } from "@/lib/utils";
+import {
+  docBucket, docPaper, fetchDeliveredOrders, fetchReceivedDocuments, localRevenue, startOfTodayGT,
+  type DocBucket,
+} from "@/lib/local-revenue";
+import { PrintJobsRealtime } from "../print-jobs/realtime-refresh";
 import type { Profile, PrintJob } from "@/types";
 import type { Metadata } from "next";
 
@@ -68,39 +73,62 @@ export default async function DashboardPage() {
 
   const { data: { user } } = await supabase.auth.getUser();
 
-  const [profileResult, jobsResult] = await Promise.all([
+  // "Hoy" siempre según la hora de Guatemala, corra donde corra el panel.
+  const startOfToday = startOfTodayGT();
+  const [profileResult, jobsResult, deliveredToday, docsToday] = await Promise.all([
     supabase.from("profiles").select("*").eq("id", user!.id).single(),
     supabase
       .from("print_jobs")
       .select("*")
-      .gte("created_at", new Date(new Date().setHours(0, 0, 0, 0)).toISOString()),
+      .gte("created_at", startOfToday),
+    // Flujo local: un pedido cuenta como ingreso al marcarlo Entregado
+    fetchDeliveredOrders(supabase, { since: startOfToday }),
+    fetchReceivedDocuments(supabase, startOfToday),
   ]);
 
   const profile = profileResult.data as Profile | null;
   const todayJobs = (jobsResult.data as PrintJob[]) ?? [];
+  const qrRevenue = todayJobs
+    .filter((j) => j.status === "paid")
+    .reduce((acc, j) => acc + Number(j.total_price), 0);
+  const deliveredRevenue = localRevenue(deliveredToday);
+
+  // Cada documento recibido por carpeta cuenta una vez, en el punto del flujo donde está.
+  const buckets = docsToday.map(docBucket);
+  const inBucket = (b: DocBucket) => buckets.filter((x) => x === b).length;
+  const paperOf = (key: string) => docsToday.filter((d) => docPaper(d) === key).length;
+  const qrCarta = todayJobs.filter((j) => !j.paper_size || j.paper_size === "carta").length;
+  const qrOficio = todayJobs.filter((j) => j.paper_size === "oficio2").length;
 
   const stats = {
-    total:    todayJobs.length,
-    revenue:  todayJobs
-      .filter((j) => j.status === "paid")
-      .reduce((acc, j) => acc + Number(j.total_price), 0),
-    pending:  todayJobs.filter((j) => j.status === "pending_approval").length,
-    approved: todayJobs.filter((j) => j.status === "approved").length,
-    printed:  todayJobs.filter((j) => j.status === "printed").length,
-    rejected: todayJobs.filter((j) => j.status === "rejected").length,
-    failed:   todayJobs.filter((j) => j.status === "failed").length,
-    bw:       todayJobs.filter((j) => j.print_type === "bw").length,
-    color:    todayJobs.filter((j) => j.print_type === "color").length,
-    carta:    todayJobs.filter((j) => !j.paper_size || j.paper_size === "carta").length,
-    oficio:   todayJobs.filter((j) => j.paper_size === "oficio2").length,
+    total:    todayJobs.length + docsToday.length,
+    revenue:  qrRevenue + deliveredRevenue,
+    pending:  inBucket("pending") + todayJobs.filter((j) => j.status === "pending_approval" || j.status === "uploaded").length,
+    approved: inBucket("queued") + todayJobs.filter((j) => j.status === "approved" || j.status === "printing").length,
+    printed:  inBucket("printed") + todayJobs.filter((j) => j.status === "printed" || j.status === "paid").length,
+    rejected: inBucket("cancelled") + todayJobs.filter((j) => j.status === "rejected").length,
+    failed:   inBucket("failed") + todayJobs.filter((j) => j.status === "failed").length,
+    bw:       docsToday.filter((d) => d.color_mode === "bw").length + todayJobs.filter((j) => j.print_type === "bw").length,
+    color:    docsToday.filter((d) => d.color_mode === "color").length + todayJobs.filter((j) => j.print_type === "color").length,
+    carta:    paperOf("carta") + qrCarta,
+    oficio:   paperOf("oficio2") + qrOficio,
+    legal:    paperOf("legal"),
+    other:    docsToday.length - paperOf("carta") - paperOf("oficio2") - paperOf("legal"),
   };
 
   const statusRows = [
-    { label: "Pendientes",  value: stats.pending,  color: "#eab308", Icon: Clock,         iconBg: "bg-yellow-50",  iconClr: "text-yellow-600" },
-    { label: "Aprobados",   value: stats.approved,  color: "#22c55e", Icon: CheckCircle,   iconBg: "bg-green-50",   iconClr: "text-green-600"  },
-    { label: "Impresos",    value: stats.printed,   color: "#8b5cf6", Icon: Printer,       iconBg: "bg-purple-50",  iconClr: "text-purple-600" },
-    { label: "Rechazados",  value: stats.rejected,  color: "#ef4444", Icon: XCircle,       iconBg: "bg-red-50",     iconClr: "text-red-600"    },
-    { label: "Fallidos",    value: stats.failed,    color: "#f97316", Icon: AlertTriangle,  iconBg: "bg-orange-50",  iconClr: "text-orange-600" },
+    { label: "Por imprimir", value: stats.pending,  color: "#eab308", Icon: Clock,         iconBg: "bg-yellow-50",  iconClr: "text-yellow-600" },
+    { label: "En cola",      value: stats.approved,  color: "#22c55e", Icon: CheckCircle,   iconBg: "bg-green-50",   iconClr: "text-green-600"  },
+    { label: "Impresos",     value: stats.printed,   color: "#8b5cf6", Icon: Printer,       iconBg: "bg-purple-50",  iconClr: "text-purple-600" },
+    { label: "Cancelados",   value: stats.rejected,  color: "#ef4444", Icon: XCircle,       iconBg: "bg-red-50",     iconClr: "text-red-600"    },
+    { label: "Con error",    value: stats.failed,    color: "#f97316", Icon: AlertTriangle,  iconBg: "bg-orange-50",  iconClr: "text-orange-600" },
+  ];
+
+  const paperRows = [
+    { label: "Carta (8.5 × 11)",     value: stats.carta,  dot: "bg-sky-500",    color: "#0ea5e9" },
+    { label: "Oficio II (8.5 × 13)", value: stats.oficio, dot: "bg-teal-500",   color: "#14b8a6" },
+    { label: "Legal (8.5 × 14)",     value: stats.legal,  dot: "bg-amber-500",  color: "#f59e0b" },
+    { label: "A4, mixto u otro",     value: stats.other,  dot: "bg-gray-400",   color: "#9ca3af" },
   ];
 
   return (
@@ -108,6 +136,11 @@ export default async function DashboardPage() {
       <AdminHeader profile={profile} title="Dashboard" />
 
       <div className="flex-1 overflow-y-auto p-6 space-y-5">
+
+        {/* Los datos se vuelven a consultar solos cada 30 s */}
+        <div className="flex justify-end">
+          <PrintJobsRealtime />
+        </div>
 
         {/* ── Fila 1: métricas principales ─────────────────────── */}
         <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
@@ -120,7 +153,7 @@ export default async function DashboardPage() {
                 <p className="mt-1 text-5xl font-black text-gray-900">{stats.total}</p>
                 <p className="mt-2 flex items-center gap-1.5 text-xs text-gray-400">
                   <FileText className="h-3.5 w-3.5" />
-                  documentos recibidos
+                  {docsToday.length} por carpeta · {todayJobs.length} por QR
                 </p>
               </div>
               <Ring pct={stats.total > 0 ? 1 : 0} color="#3b82f6" size={80} stroke={10}>
@@ -139,7 +172,7 @@ export default async function DashboardPage() {
                 </p>
                 <p className="mt-2 flex items-center gap-1.5 text-xs text-gray-400">
                   <DollarSign className="h-3.5 w-3.5" />
-                  trabajos marcados como pagados
+                  {deliveredToday.length} pedido(s) entregados: {formatCurrency(deliveredRevenue)} · QR pagados: {formatCurrency(qrRevenue)}
                 </p>
               </div>
               <div className="flex h-16 w-16 items-center justify-center rounded-full bg-emerald-50">
@@ -154,7 +187,7 @@ export default async function DashboardPage() {
 
           {/* Estado de trabajos */}
           <Card>
-            <p className="mb-4 text-sm font-semibold text-gray-700">Estado de trabajos</p>
+            <p className="mb-4 text-sm font-semibold text-gray-700">Estado de los documentos de hoy</p>
             <div className="space-y-3.5">
               {statusRows.map(({ label, value, color, Icon, iconBg, iconClr }) => (
                 <div key={label}>
@@ -207,26 +240,18 @@ export default async function DashboardPage() {
             <Card>
               <p className="mb-3 text-sm font-semibold text-gray-700">Formato de papel</p>
               <div className="space-y-3">
-                <div>
-                  <div className="mb-1.5 flex items-center justify-between">
-                    <div className="flex items-center gap-2">
-                      <span className="h-2.5 w-2.5 rounded-full bg-sky-500 inline-block" />
-                      <span className="text-xs font-medium text-gray-600">Carta (8.5 × 11)</span>
+                {paperRows.map((row) => (
+                  <div key={row.label}>
+                    <div className="mb-1.5 flex items-center justify-between">
+                      <div className="flex items-center gap-2">
+                        <span className={`h-2.5 w-2.5 rounded-full inline-block ${row.dot}`} />
+                        <span className="text-xs font-medium text-gray-600">{row.label}</span>
+                      </div>
+                      <span className="text-sm font-bold text-gray-900">{row.value}</span>
                     </div>
-                    <span className="text-sm font-bold text-gray-900">{stats.carta}</span>
+                    <Bar value={row.value} total={stats.total} color={row.color} />
                   </div>
-                  <Bar value={stats.carta} total={stats.total} color="#0ea5e9" />
-                </div>
-                <div>
-                  <div className="mb-1.5 flex items-center justify-between">
-                    <div className="flex items-center gap-2">
-                      <span className="h-2.5 w-2.5 rounded-full bg-teal-500 inline-block" />
-                      <span className="text-xs font-medium text-gray-600">Oficio 2 (8.5 × 13)</span>
-                    </div>
-                    <span className="text-sm font-bold text-gray-900">{stats.oficio}</span>
-                  </div>
-                  <Bar value={stats.oficio} total={stats.total} color="#14b8a6" />
-                </div>
+                ))}
               </div>
             </Card>
           </div>
