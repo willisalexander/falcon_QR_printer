@@ -79,6 +79,7 @@ export function useAgentState() {
   useEffect(() => {
     const abort = new AbortController();
     let alive = true;
+    let backoff = 3000;
     (async () => {
       while (alive) {
         try {
@@ -87,6 +88,7 @@ export function useAgentState() {
           setState(s);
           setError(null);
           setRole(agentRole());
+          backoff = 3000;
           // Espera larga: responde en cuanto algo cambia en el agente.
           await Promise.race([
             agentCall("GET", `/api/changes?since=${s.agent.version}`, undefined, abort.signal),
@@ -95,7 +97,8 @@ export function useAgentState() {
         } catch (err) {
           if (!alive || (err as Error)?.name === "AbortError") return;
           setError((err as Error).message);
-          await new Promise((r) => setTimeout(r, 3000));
+          await new Promise((r) => setTimeout(r, backoff));
+          backoff = Math.min(backoff * 2, 30000);
         }
       }
     })();

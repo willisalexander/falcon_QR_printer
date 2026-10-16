@@ -138,16 +138,31 @@ export function fakeSupabase() {
       throw new Error("PROHIBIDO: el flujo local intentó usar Supabase Storage");
     },
     from(table) {
-      const result = () =>
-        sb.offline ? { data: null, error: { message: "fetch failed" } } : { data: sb.tables[table] ?? [], error: null };
+      const filters = [];
+      const rows = () => (sb.tables[table] ?? []).filter((r) => filters.every(([k, v]) => r[k] === v));
+      const result = () => (sb.offline ? { data: null, error: { message: "fetch failed" } } : { data: rows(), error: null });
       const builder = {
         select: () => builder,
         in: () => builder,
+        order: () => builder,
+        limit: () => builder,
+        eq: (k, v) => (filters.push([k, v]), builder),
         then: (res, rej) => Promise.resolve(result()).then(res, rej),
-        upsert(rows) {
+        upsert(list) {
           if (sb.offline) return Promise.resolve({ error: { message: "fetch failed" } });
-          sb.upserts.push({ table, rows: structuredClone(rows) });
+          sb.upserts.push({ table, rows: structuredClone(list) });
           return Promise.resolve({ error: null });
+        },
+        update(values) {
+          const upd = {
+            eq: (k, v) => (filters.push([k, v]), upd),
+            then: (res, rej) => {
+              if (sb.offline) return Promise.resolve({ error: { message: "fetch failed" } }).then(res, rej);
+              for (const r of rows()) Object.assign(r, values);
+              return Promise.resolve({ error: null }).then(res, rej);
+            },
+          };
+          return upd;
         },
       };
       return builder;

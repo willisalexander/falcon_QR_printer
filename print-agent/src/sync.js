@@ -143,6 +143,55 @@ export function createSync(ctx, client) {
     if (before !== after) bus.touch();
   }
 
+  /**
+   * Solicitudes hechas desde otra computadora (Entregado / Cancelar).
+   * Se aplican aquí, con la fecha en que se pidieron. Si el agente cayera entre
+   * aplicar y marcar la solicitud, la siguiente vuelta la reconoce como ya aplicada.
+   */
+  async function processCommands() {
+    const { data, error } = await client.from("reception_commands")
+      .select("id, order_id, action, requested_at, requested_by_email")
+      .eq("status", "pending").order("requested_at").limit(50);
+    if (error) {
+      // Sin la migración 009 la función simplemente no existe todavía.
+      if (/reception_commands/.test(error.message)) return;
+      throw new Error(error.message);
+    }
+    for (const cmd of data ?? []) {
+      const target = cmd.action === "finish" ? "finished" : "cancelled";
+      const actor = `${cmd.requested_by_email || "personal"} (a distancia)`;
+      const local = db.get("SELECT status FROM orders WHERE id = ?", cmd.order_id);
+      let status = "done", message = null;
+      if (!local) {
+        status = "rejected";
+        message = "El pedido no existe en la PC del negocio.";
+      } else if (local.status === target) {
+        message = "Ya estaba aplicado.";
+      } else if (local.status !== "open") {
+        status = "rejected";
+        message = `El pedido ya estaba ${local.status === "finished" ? "entregado" : "cancelado"}.`;
+      } else if (!["finish", "cancel"].includes(cmd.action)) {
+        status = "rejected";
+        message = "Acción no permitida.";
+      } else {
+        try {
+          if (cmd.action === "finish") await ctx.orders.finishOrder(cmd.order_id, actor, { at: cmd.requested_at });
+          else ctx.orders.cancelOrder(cmd.order_id, actor, { at: cmd.requested_at });
+        } catch (err) {
+          if (!err?.status) throw err; // error inesperado: queda pendiente y se reintenta
+          status = "rejected";
+          message = err.message;
+        }
+      }
+      const upd = await client.from("reception_commands")
+        .update({ status, processed_at: nowIso(), result_message: message })
+        .eq("id", cmd.id).eq("status", "pending");
+      if (upd.error) throw new Error(upd.error.message);
+      await log(status === "done" ? "info" : "warn",
+        `Solicitud a distancia de ${cmd.requested_by_email ?? "personal"} (${cmd.action === "finish" ? "Entregado" : "Cancelar"}): ${status === "done" ? message ?? "aplicada" : "rechazada — " + message}`);
+    }
+  }
+
   async function pushEntity(entity, rows) {
     const mapper = MAPPERS[entity];
     const items = [];
@@ -192,6 +241,7 @@ export function createSync(ctx, client) {
         await pullConfig();
         lastPull = ctx.now();
       }
+      await processCommands();
       await pushDirty();
       status.online = true;
       status.lastOkAt = nowIso();

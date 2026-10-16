@@ -63,6 +63,12 @@ function validatePatch(patch, printers) {
 export function createOrders(ctx) {
   const { db, store, bus, files } = ctx;
 
+  /** Fecha de una acción pedida antes (a distancia); nunca en el futuro ni inválida. */
+  const effectiveTime = (at) => {
+    const t = at ? Date.parse(at) : NaN;
+    return Number.isFinite(t) && t <= ctx.now() ? new Date(t).toISOString() : nowIso();
+  };
+
   // ── Lectura ────────────────────────────────────────────────
 
   const loadPrinters = () =>
@@ -581,9 +587,13 @@ export function createOrders(ctx) {
 
     // ── Cierre de pedidos ────────────────────────────────────
 
-    /** Entregado: confirma lo enviado, cierra el pedido e inicia el plazo de retención. */
-    async finishOrder(id, actor) {
+    /**
+     * Entregado: confirma lo enviado, cierra el pedido e inicia el plazo de retención.
+     * `at`: momento en que se pidió (una solicitud hecha desde otra computadora).
+     */
+    async finishOrder(id, actor, { at } = {}) {
       if (!UUID_RE.test(id)) throw new RequestError("Identificador inválido.");
+      const when = effectiveTime(at);
       db.tx(() => {
         const o = db.get("SELECT status FROM orders WHERE id = ?", id);
         if (!o) throw new RequestError("Pedido no encontrado.", 404);
@@ -594,10 +604,10 @@ export function createOrders(ctx) {
           throw new RequestError("El pedido tiene trabajos en cola o con envío incierto. Resuélvalos antes de finalizar.", 409);
         }
         for (const j of db.all("SELECT id FROM print_jobs WHERE order_id = ? AND status IN ('sent','printing')", id)) {
-          db.run("UPDATE print_jobs SET status = 'printed', confirmed_at = ?, updated_at = ? WHERE id = ?", nowIso(), nowIso(), j.id);
+          db.run("UPDATE print_jobs SET status = 'printed', confirmed_at = ?, updated_at = ? WHERE id = ?", when, nowIso(), j.id);
           store.dirty("job", j.id);
         }
-        db.run("UPDATE orders SET status = 'finished', is_complete = 1, finished_at = ?, updated_at = ? WHERE id = ?", nowIso(), nowIso(), id);
+        db.run("UPDATE orders SET status = 'finished', is_complete = 1, finished_at = ?, updated_at = ? WHERE id = ?", when, nowIso(), id);
         store.dirty("order", id);
         store.audit(actor, "order_finished", "order", id);
       });
@@ -608,8 +618,9 @@ export function createOrders(ctx) {
       bus.touch();
     },
 
-    cancelOrder(id, actor) {
+    cancelOrder(id, actor, { at } = {}) {
       if (!UUID_RE.test(id)) throw new RequestError("Identificador inválido.");
+      const when = effectiveTime(at);
       db.tx(() => {
         const o = db.get("SELECT status FROM orders WHERE id = ?", id);
         if (!o || o.status !== "open") throw new RequestError("El pedido no está abierto.", 409);
@@ -617,10 +628,10 @@ export function createOrders(ctx) {
           throw new RequestError("Hay un envío en curso o incierto: resuélvalo antes de cancelar.", 409);
         }
         for (const j of db.all("SELECT id FROM print_jobs WHERE order_id = ? AND status = 'ready'", id)) {
-          db.run("UPDATE print_jobs SET status = 'cancelled', cancelled_at = ?, updated_at = ? WHERE id = ?", nowIso(), nowIso(), j.id);
+          db.run("UPDATE print_jobs SET status = 'cancelled', cancelled_at = ?, updated_at = ? WHERE id = ?", when, nowIso(), j.id);
           store.dirty("job", j.id);
         }
-        db.run("UPDATE orders SET status = 'cancelled', finished_at = ?, updated_at = ? WHERE id = ?", nowIso(), nowIso(), id);
+        db.run("UPDATE orders SET status = 'cancelled', finished_at = ?, updated_at = ? WHERE id = ?", when, nowIso(), id);
         store.dirty("order", id);
         store.audit(actor, "order_cancelled", "order", id);
       });

@@ -120,3 +120,28 @@ El modo automático existe en el agente pero no se ofrece en el panel. Si alguna
 Puede seguir recibiendo e imprimiendo con la pantalla que ya tenga abierta. La franja superior mostrará
 "Sin internet — N cambios por sincronizar"; se suben solos al volver la conexión.
 Para iniciar sesión en el panel sí se necesita internet.
+
+## Desde otra computadora (modo a distancia)
+
+En una computadora **sin** el agente de impresión, Recepción e Historial se abren en **modo a distancia**
+(franja azul arriba). Ahí se puede:
+
+- Ver los pedidos abiertos: cliente, documentos, páginas, total y estado de impresión.
+- Marcar **Entregado** o **Cancelar**. La PC del negocio lo aplica en unos 10 segundos; mientras tanto el pedido
+  dice "Entrega solicitada · aplicándose en la PC del negocio…". Si la PC del negocio está apagada, se aplica al
+  encenderla, y el ingreso cuenta en la fecha y hora en que se pulsó el botón.
+- Buscar en el historial de pedidos cerrados.
+
+No se puede ver el contenido de los documentos, asignar clientes, autorizar ni reimprimir: los archivos están solo
+en la PC del negocio.
+
+Si la PC del negocio no puede aplicar una solicitud (por ejemplo, el pedido tiene un trabajo en cola), el pedido
+muestra el motivo en rojo.
+
+En la PC del negocio nunca aparece el modo a distancia: si su agente se detiene, se verá el aviso "Sin conexión con
+el agente" para que lo reinicien.
+
+## Vista previa
+
+La vista previa (tecla **V** o el ojo) dibuja el PDF dentro del panel, así que se ve igual en cualquier navegador.
+Encima tiene **Abrir en pestaña nueva** y **Descargar** (con el nombre original del archivo).

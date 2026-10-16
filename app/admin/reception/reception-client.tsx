@@ -5,6 +5,9 @@ import { AlertTriangle, Eye, FileText, Printer as PrinterIcon, RotateCcw, Trash2
 import { AgentStatusBar } from "@/components/admin/agent-status";
 import { Button } from "@/components/ui/button";
 import { Modal } from "@/components/ui/modal";
+import { PdfPreview } from "@/components/admin/pdf-preview";
+import { RemoteReception } from "@/components/admin/remote-mode";
+import { useRemoteMode } from "@/lib/agent/use-remote-mode";
 import { AgentError, agentCall, agentPdfUrl, useAgentState } from "@/lib/agent/client";
 import { DUPLEX_LABELS, PAPER_OPTIONS, SCALE_LABELS, docStatus, sizeLabel, timeGT } from "@/lib/agent/labels";
 import type { AgentDoc, AgentJob, AgentOrder } from "@/lib/agent/types";
@@ -20,6 +23,7 @@ const isTyping = (el: EventTarget | null) => el instanceof HTMLElement && ["INPU
 
 export function ReceptionClient() {
   const { state, error, role, refresh } = useAgentState();
+  const remote = useRemoteMode(state, error);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [cursor, setCursor] = useState<string | null>(null);
   const [filter, setFilter] = useState<Filter>("all");
@@ -208,6 +212,9 @@ export function ReceptionClient() {
   }
 
   const printers = (state?.printers ?? []).filter((p) => p.is_active);
+
+  // Computadora sin agente: solo ver pedidos y entregarlos o cancelarlos.
+  if (remote) return <RemoteReception />;
 
   return (
     <div className="flex h-full flex-col">
@@ -431,7 +438,7 @@ export function ReceptionClient() {
               <p className="truncate text-sm font-medium text-gray-800">Así se imprimirá: {preview.name}</p>
               <button onClick={() => setPreview(null)} aria-label="Cerrar vista previa"><X className="h-4 w-4 text-gray-500" /></button>
             </div>
-            <iframe title="Vista previa del PDF" src={preview.url} className="flex-1" />
+            <PdfPreview url={preview.url} name={preview.name} />
           </div>
         )}
       </div>

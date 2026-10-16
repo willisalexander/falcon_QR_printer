@@ -5,6 +5,9 @@ import { Eye, Printer as PrinterIcon, Search } from "lucide-react";
 import { AgentStatusBar } from "@/components/admin/agent-status";
 import { Button } from "@/components/ui/button";
 import { Modal } from "@/components/ui/modal";
+import { PdfPreview } from "@/components/admin/pdf-preview";
+import { RemoteHistory } from "@/components/admin/remote-mode";
+import { useRemoteMode } from "@/lib/agent/use-remote-mode";
 import { AgentError, agentCall, agentPdfUrl, useAgentState } from "@/lib/agent/client";
 import { COLOR_LABELS, DUPLEX_LABELS, PAPER_LABELS, PAPER_OPTIONS, dateGT, docStatus, jobStatus, sizeLabel, timeGT } from "@/lib/agent/labels";
 import type { AgentDoc, AgentJob, AgentPrinter, HistoryOrder } from "@/lib/agent/types";
@@ -54,6 +57,7 @@ const field = "w-full rounded border border-gray-300 px-2 py-1.5 text-sm";
 
 export function HistoryClient() {
   const { state, error, role } = useAgentState();
+  const remote = useRemoteMode(state, error);
   const [tab, setTab] = useState<Tab>("orders");
   const [q, setQ] = useState("");
   const [orders, setOrders] = useState<HistoryOrder[]>([]);
@@ -62,7 +66,7 @@ export function HistoryClient() {
   const [deletions, setDeletions] = useState<Deletion[]>([]);
   const [notice, setNotice] = useState<{ kind: "ok" | "error"; text: string } | null>(null);
   const [reprint, setReprint] = useState<AgentDoc | null>(null);
-  const [previewUrl, setPreviewUrl] = useState<string | null>(null);
+  const [preview, setPreview] = useState<{ url: string; name: string } | null>(null);
 
   const load = useCallback(async () => {
     try {
@@ -82,7 +86,7 @@ export function HistoryClient() {
     return () => clearTimeout(timer);
   }, [load, version]);
 
-  useEffect(() => () => { if (previewUrl) URL.revokeObjectURL(previewUrl); }, [previewUrl]);
+  useEffect(() => () => { if (preview) URL.revokeObjectURL(preview.url); }, [preview]);
 
   async function toggleKeep(order: HistoryOrder) {
     try {
@@ -92,6 +96,9 @@ export function HistoryClient() {
       setNotice({ kind: "error", text: (e as Error).message });
     }
   }
+
+  // Computadora sin agente: historial desde los datos administrativos.
+  if (remote) return <RemoteHistory />;
 
   return (
     <div>
@@ -191,7 +198,7 @@ export function HistoryClient() {
                         <td className={cn(td, "whitespace-nowrap text-right")}>
                           {d.pdf_available ? (
                             <>
-                              <Button size="sm" variant="ghost" onClick={async () => { try { setPreviewUrl(await agentPdfUrl(d.id)); } catch (e) { setNotice({ kind: "error", text: (e as Error).message }); } }}>
+                              <Button size="sm" variant="ghost" onClick={async () => { try { setPreview({ url: await agentPdfUrl(d.id), name: d.original_name }); } catch (e) { setNotice({ kind: "error", text: (e as Error).message }); } }}>
                                 <Eye className="h-4 w-4" />Ver
                               </Button>
                               <Button size="sm" onClick={() => setReprint(d)}><PrinterIcon className="h-4 w-4" />Reimprimir</Button>
@@ -286,8 +293,8 @@ export function HistoryClient() {
         )}
       </Modal>
 
-      <Modal open={!!previewUrl} onClose={() => setPreviewUrl(null)} title="Vista previa" className="max-w-4xl">
-        {previewUrl && <iframe title="Vista previa del PDF" src={previewUrl} className="h-[70vh] w-full" />}
+      <Modal open={!!preview} onClose={() => setPreview(null)} title={preview ? `Vista previa: ${preview.name}` : "Vista previa"} className="max-w-4xl">
+        {preview && <div className="flex h-[70vh] flex-col"><PdfPreview url={preview.url} name={preview.name} /></div>}
       </Modal>
     </div>
   );

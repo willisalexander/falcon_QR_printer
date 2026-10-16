@@ -192,3 +192,65 @@ test("LibreOffice real: conversión DOCX/DOC a PDF (se omite si no está instala
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+test("a distancia: Entregado y Cancelar pedidos desde otra computadora, sin mover documentos", async () => {
+  const sb = fakeSupabase();
+  sb.tables.reception_commands = [];
+  const t = await makeAgent({ supabase: sb });
+  try {
+    await waitFor(() => t.ctx.orders.loadPrinters().length === 3);
+    const mk = async (name) => {
+      const before = t.docs().length;
+      await t.drop(`${name}.pdf`, await makePdf(["carta"]));
+      await waitFor(() => t.docs().filter((d) => d.status === "ready").length > before);
+      const id = t.docs().at(-1).id;
+      const { body } = await t.api("POST", "/api/documents/assign", { ids: [id], customerName: name });
+      await t.api("POST", "/api/documents/update", { ids: [id], patch: { copies: 1, color_mode: "bw", duplex: "simplex" } });
+      return { id, orderId: body.orderId };
+    };
+    const a = await mk("Entrega remota");
+    await t.api("POST", "/api/documents/authorize", { ids: [a.id] });
+    await t.waitJobs("sent", 1);
+    const b = await mk("Cancelado remoto");
+    const c = await mk("Con cola");
+    t.printerService.offline.add("HP Carta");
+    await t.api("POST", "/api/documents/authorize", { ids: [c.id] });
+
+    const asked = new Date(Date.now() - 3 * 3600000).toISOString(); // pedido hace 3 h con la PC apagada
+    const cmd = (id, order_id, action) => ({ id, order_id, action, requested_at: asked, requested_by_email: "caja@prueba", status: "pending" });
+    sb.tables.reception_commands.push(
+      cmd("c1", a.orderId, "finish"),
+      cmd("c2", b.orderId, "cancel"),
+      cmd("c3", c.orderId, "finish"),
+      cmd("c4", "99999999-0000-4000-8000-000000000000", "finish"),
+    );
+    await t.ctx.sync.cycle();
+    const by = Object.fromEntries(sb.tables.reception_commands.map((r) => [r.id, r]));
+    assert.equal(by.c1.status, "done");
+    assert.equal(by.c2.status, "done");
+    assert.equal(by.c3.status, "rejected");
+    assert.match(by.c3.result_message, /trabajos en cola/);
+    assert.equal(by.c4.status, "rejected");
+
+    const order = (id) => t.ctx.db.get("SELECT * FROM orders WHERE id = ?", id);
+    assert.equal(order(a.orderId).status, "finished");
+    assert.equal(order(a.orderId).finished_at, asked, "el ingreso cuenta en el momento en que se pidió");
+    assert.equal(t.jobs().find((j) => j.document_id === a.id).status, "printed");
+    assert.equal(order(b.orderId).status, "cancelled");
+    assert.equal(order(c.orderId).status, "open", "no se fuerza si hay trabajos en cola");
+    const audit = t.ctx.db.get("SELECT actor FROM audit WHERE action = 'order_finished'");
+    assert.equal(audit.actor, "caja@prueba (a distancia)");
+
+    // Repetida o ya aplicada: no hace nada dos veces.
+    sb.tables.reception_commands.push(cmd("c5", a.orderId, "finish"), cmd("c6", a.orderId, "cancel"));
+    await t.ctx.sync.cycle();
+    const again = Object.fromEntries(sb.tables.reception_commands.map((r) => [r.id, r]));
+    assert.deepEqual([again.c5.status, again.c5.result_message], ["done", "Ya estaba aplicado."]);
+    assert.equal(again.c6.status, "rejected");
+    assert.equal(order(a.orderId).status, "finished");
+    // Nunca se envió un documento a Supabase.
+    assert.ok(!JSON.stringify(sb.upserts).includes("%PDF"));
+  } finally {
+    await t.close();
+  }
+});
